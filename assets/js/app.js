@@ -1183,7 +1183,7 @@ auth.onAuthStateChanged(async user=>{
 document.querySelectorAll(".nav-item").forEach(b=>b.onclick=()=>showView(b.dataset.view));
 document.querySelectorAll("[data-people-tab]").forEach(b=>b.onclick=()=>{peopleTab=b.dataset.peopleTab;document.querySelectorAll("[data-people-tab]").forEach(x=>x.classList.toggle("active",x===b));renderPeople()});
 $("peopleSearch").oninput=renderPeople;$("chatSearch").oninput=renderChats;$("groupSearch").oninput=renderGroups;$("createGroupBtn").onclick=showGroupModal;$("saveGroupBtn").onclick=createGroup;
-$("refreshBtn").onclick=()=>{renderChats();renderPeople();toast("Refreshed")};
+if($("refreshBtn"))$("refreshBtn").onclick=()=>{renderChats();renderPeople();renderGroups();toast("Refreshed")};
 $("backChat").onclick=closeChat;$("composer").onsubmit=sendMessage;
 $("messageInput").addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,120)+"px";handleTyping()});
 $("pickImage").onclick=()=>$("imageInput").click();
