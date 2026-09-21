@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>Fast Messenger Pro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Bengali:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+<link rel="stylesheet" href="./assets/css/app.css?v=5">
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics-compat.js"></script>
+<script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.24.0.js"></script>
+</head>
+<body class="booting">
+<div id="offlineBar" class="offline-bar hidden"><i class="fa-solid fa-wifi"></i><span>Offline mode — saved chats are available</span></div>
+<div id="syncBar" class="sync-bar hidden"><i class="fa-solid fa-rotate"></i><span id="syncText">Syncing…</span></div>
+<div id="pullRefresh" class="pull-refresh"><i class="fa-solid fa-arrow-down"></i><span>Pull to refresh</span></div>
+<div id="toast" class="toast"></div>
+
+<section id="loginScreen" class="login-screen">
+  <div class="login-card">
+    <div class="logo-orbit"><i class="fa-solid fa-paper-plane"></i></div>
+    <h1>Fast Messenger</h1>
+    <p>দ্রুত, realtime এবং media-ready private messaging.</p>
+    <button id="googleLogin" class="google-btn"><i class="fa-brands fa-google"></i><span>Google দিয়ে শুরু করুন</span></button>
+    <small id="loginError"></small>
+  </div>
+</section>
+
+<div id="app" class="app hidden">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-icon"><i class="fa-solid fa-paper-plane"></i></div>
+        <div><b>Fast Messenger</b><span>Private • Realtime</span></div>
+      </div>
+      <div class="top-actions">
+                <button id="profileBtn" class="avatar-btn" title="Profile"><img id="headerAvatar" alt="Profile"><span id="headerOnline"></span></button>
+        <button id="menuBtn" class="round-btn" title="Menu"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section id="homeView" class="view active">
+      <div class="hero-head">
+        <div><h2>Your chats</h2><p id="chatSummary">Realtime conversations</p></div>
+        <button id="refreshBtn" class="round-btn ghost"><i class="fa-solid fa-arrows-rotate"></i></button>
+      </div>
+      <div class="search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input id="chatSearch" placeholder="চ্যাট বা মানুষ খুঁজুন..."><kbd>⌘ K</kbd></div>
+      <div id="chatList" class="chat-list"></div>
+    </section>
+
+    <section id="peopleView" class="view">
+      <div class="hero-head"><div><h2>People</h2><p>বন্ধু খুঁজুন ও নতুন conversation শুরু করুন</p></div></div>
+      <div class="search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input id="peopleSearch" placeholder="নাম বা email দিয়ে খুঁজুন..."></div>
+      <div class="people-tabs">
+        <button class="pill active" data-people-tab="friends">Friends</button>
+        <button class="pill" data-people-tab="requests">Requests <span id="requestBadge">0</span></button>
+        <button class="pill" data-people-tab="all">Find people</button>
+      </div>
+      <div id="peopleList" class="people-list"></div>
+    </section>
+
+    <section id="groupsView" class="view">
+      <div class="hero-head">
+        <div><h2>Groups</h2><p>আপনার বন্ধুদের নিয়ে তৈরি করা গ্রুপগুলো এখানে</p></div>
+        <button id="createGroupBtn" class="round-btn ghost" title="নতুন গ্রুপ"><i class="fa-solid fa-user-group"></i></button>
+      </div>
+      <div class="search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input id="groupSearch" placeholder="গ্রুপ খুঁজুন..."></div>
+      <div id="groupList" class="people-list"></div>
+    </section>
+
+    <section id="profileView" class="view">
+      <div class="profile-page">
+        <div class="profile-cover"><div class="cover-glow"></div><div class="google-chip"><i class="fa-brands fa-google"></i> Google account</div></div>
+        <div class="profile-main">
+          <div class="profile-avatar"><img id="profileAvatar" alt="Profile"><span></span></div>
+          <h2 id="profileName">User</h2><p id="profileEmail"></p>
+          <div class="google-profile-note"><i class="fa-solid fa-shield-halved"></i><span>নাম, ছবি ও ইমেইল Google account থেকে স্বয়ংক্রিয়ভাবে দেখানো হচ্ছে।</span></div>
+          <p id="profileBio" class="bio">Fast Messenger profile</p>
+          <div class="profile-status"><span class="status-dot"></span> Online</div>
+          <div class="profile-stats"><div><b id="statChats">0</b><span>Chats</span></div><div><b id="statFriends">0</b><span>Friends</span></div><div><b id="statSent">0</b><span>Sent</span></div></div>
+          <button id="settingsFromProfile" class="primary-btn"><i class="fa-solid fa-gear"></i> Settings</button>
+          <button id="logoutBtn" class="danger-btn"><i class="fa-solid fa-right-from-bracket"></i> Log out</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="settingsView" class="view">
+      <div class="settings-page">
+        <div class="settings-head">
+          <button class="round-btn ghost" id="settingsBack"><i class="fa-solid fa-arrow-left"></i></button>
+          <div><h2>Settings</h2></div>
+        </div>
+
+        <div class="settings-section">
+          <button class="settings-item account-folder" id="accountManagementBtn" type="button" aria-expanded="false">
+            <span class="settings-icon blue"><i class="fa-solid fa-user-gear"></i></span>
+            <span class="settings-copy"><b>Account Management</b><small>অ্যাকাউন্ট সম্পর্কিত নিয়ন্ত্রণগুলো এখানে</small></span>
+            <i id="accountFolderChevron" class="fa-solid fa-chevron-down folder-chevron"></i>
+          </button>
+          <div id="accountManagementPanel" class="account-folder-panel hidden">
+            <button class="settings-item danger-soft account-delete-item" id="deleteAccountBtn" type="button">
+              <span class="settings-icon red"><i class="fa-solid fa-user-slash"></i></span>
+              <span class="settings-copy"><b>অ্যাকাউন্ট ডিলিট</b><small>আপনার অ্যাপের প্রোফাইল, বন্ধু, request ও message data মুছে ফেলুন</small></span>
+              <i class="fa-solid fa-chevron-right"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3>App Preferences</h3>
+          <div class="settings-item">
+            <span class="settings-icon purple"><i class="fa-solid fa-moon"></i></span>
+            <span class="settings-copy"><b>অ্যাপ থিম</b><small>Light / Dark mode</small></span>
+            <label class="switch"><input id="themeToggle" type="checkbox"><span></span></label>
+          </div>
+          <div class="settings-item">
+            <span class="settings-icon blue"><i class="fa-solid fa-bell"></i></span>
+            <span class="settings-copy"><b>নোটিফিকেশন</b><small>সাউন্ড ও in-app alert চালু/বন্ধ</small></span>
+            <label class="switch"><input id="notificationToggle" type="checkbox" checked><span></span></label>
+          </div>
+          <button class="settings-item" id="privacyBtn">
+            <span class="settings-icon green"><i class="fa-solid fa-shield-halved"></i></span>
+            <span class="settings-copy"><b>গোপনীয়তা নীতি</b><small>Google OAuth ও আপনার data ব্যবহারের নিয়ম</small></span>
+            <i class="fa-solid fa-chevron-right"></i>
+          </button>
+          <button class="settings-item" id="clearCacheBtn">
+            <span class="settings-icon orange"><i class="fa-solid fa-broom"></i></span>
+            <span class="settings-copy"><b>ক্যাশে ক্লিয়ার</b><small>অপ্রয়োজনীয় temporary browser data পরিষ্কার করুন</small></span>
+            <i class="fa-solid fa-chevron-right"></i>
+          </button>
+        </div>
+
+        <div class="settings-section">
+          <h3>About & Support</h3>
+          <button class="settings-item" id="aboutBtn">
+            <span class="settings-icon purple"><i class="fa-solid fa-circle-info"></i></span>
+            <span class="settings-copy"><b>আমাদের সম্পর্কে</b><small>অ্যাপ, ডেভেলপার ও আমাদের উদ্দেশ্য সম্পর্কে জানুন</small></span>
+            <i class="fa-solid fa-chevron-right"></i>
+          </button>
+          <button class="settings-item" id="supportBtn">
+            <span class="settings-icon cyan"><i class="fa-regular fa-life-ring"></i></span>
+            <span class="settings-copy"><b>সাপোর্ট / মতামত</b><small>সমস্যা বা feedback সরাসরি support email-এ পাঠান</small></span>
+            <i class="fa-solid fa-chevron-right"></i>
+          </button>
+          <div class="support-note">Support email: <b id="supportEmailLabel">hkshahadot24@gmail.com</b></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav">
+    <button class="nav-item active" data-view="homeView"><i class="fa-regular fa-comments nav-outline"></i><i class="fa-solid fa-comments nav-filled"></i><span>Chats</span><b id="navChatBadge" class="nav-badge hidden">0</b></button>
+    <button class="nav-item" data-view="peopleView"><i class="fa-solid fa-users nav-outline"></i><i class="fa-solid fa-users nav-filled"></i><span>People</span><b id="navPeopleBadge" class="nav-badge hidden">0</b></button>
+    <button class="nav-item" data-view="groupsView"><i class="fa-solid fa-user-group nav-outline"></i><i class="fa-solid fa-user-group nav-filled"></i><span>Groups</span></button>
+    <button class="nav-item" data-view="profileView"><i class="fa-regular fa-user nav-outline"></i><i class="fa-solid fa-user nav-filled"></i><span>Profile</span></button>
+    <button class="nav-item" data-view="settingsView"><i class="fa-solid fa-gear nav-outline"></i><i class="fa-solid fa-gear nav-filled"></i><span>Settings</span></button>
+  </nav>
+</div>
+
+<section id="chatPanel" class="chat-panel hidden">
+  <header class="chat-top">
+    <button id="backChat" class="round-btn ghost"><i class="fa-solid fa-arrow-left"></i></button>
+    <div class="chat-person"><img id="chatAvatar" alt=""><span id="chatPresence" class="presence-dot"></span></div>
+    <div class="chat-title"><b id="chatName">Chat</b><span id="chatStatus">offline</span></div>
+    <div class="call-actions">
+    <button id="audioCallBtn" class="round-btn ghost" title="অডিও কল"><i class="fa-solid fa-phone"></i></button>
+    <button id="videoCallBtn" class="round-btn ghost" title="ভিডিও কল"><i class="fa-solid fa-video"></i></button>
+    <button id="chatInfo" class="round-btn ghost"><i class="fa-solid fa-circle-info"></i></button>
+  </div>
+  </header>
+  <div id="messages" class="messages"></div>
+  <div id="typing" class="typing hidden"><span></span><span></span><span></span><em>typing...</em></div>
+
+  <form id="composer" class="composer">
+    <div class="composer-row">
+      <div class="media-actions" aria-label="Media attachments">
+        <button type="button" id="pickImage" class="media-btn image" title="ছবি নির্বাচন করুন" aria-label="ছবি নির্বাচন করুন"><i class="fa-regular fa-image"></i></button>
+        <button type="button" id="pickFile" class="media-btn file" title="ফাইল নির্বাচন করুন" aria-label="ফাইল নির্বাচন করুন"><i class="fa-solid fa-paperclip"></i></button>
+        <input id="imageInput" type="file" accept="image/*" multiple hidden>
+        <input id="fileInput" type="file" multiple hidden>
+      </div>
+      <div class="compose-box">
+        <div id="uploadQueue" class="upload-queue hidden" aria-label="Selected attachments"></div>
+        <textarea id="messageInput" rows="1" maxlength="4000" placeholder="মেসেজ লিখুন..."></textarea>
+      </div>
+      <button class="send-btn" type="submit" title="Send"><i class="fa-solid fa-paper-plane"></i></button>
+    </div>
+  </form>
+</section>
+
+<div id="callInviteModal" class="modal hidden call-invite-modal">
+  <div class="modal-card call-invite-card">
+    <div class="call-invite-icon call-ringing-icon"><i class="fa-solid fa-phone-volume"></i></div>
+    <div class="incoming-avatar-ring" aria-hidden="true">
+      <span class="ring ring-1"></span><span class="ring ring-2"></span><span class="ring ring-3"></span>
+      <div class="incoming-avatar-core"><img id="incomingCallAvatar" class="call-avatar" alt=""></div>
+    </div>
+    <h3 id="incomingCallName">Incoming call</h3>
+    <p id="incomingCallType">অডিও কল</p>
+    <div class="call-invite-actions">
+      <button id="rejectCallBtn" class="call-btn decline"><i class="fa-solid fa-phone-slash"></i></button>
+      <button id="acceptCallBtn" class="call-btn accept"><i class="fa-solid fa-phone"></i></button>
+    </div>
+  </div>
+</div>
+
+<div id="cameraPreviewModal" class="camera-preview-modal hidden" role="dialog" aria-modal="true" aria-label="Video call preview">
+  <div class="camera-preview-shell">
+    <div class="camera-preview-top"><span><i class="fa-solid fa-video"></i> Video call preview</span><button id="closeCameraPreviewBtn" class="preview-icon-btn" title="Cancel"><i class="fa-solid fa-xmark"></i></button></div>
+    <div class="camera-preview-stage">
+      <video id="cameraPreviewVideo" autoplay playsinline muted></video>
+      <div id="cameraPreviewLight" class="camera-preview-light hidden"></div>
+      <div class="camera-preview-name"><span id="cameraPreviewTargetName">Video call</span><small>Check your camera and microphone before calling</small></div>
+      <div class="camera-preview-status"><span id="cameraPreviewStatus"><i class="fa-solid fa-circle"></i> Camera ready</span></div>
+    </div>
+    <div class="camera-preview-controls">
+      <button id="previewMuteBtn" class="preview-control active"><i class="fa-solid fa-microphone"></i><span>Mic</span></button>
+      <button id="previewFlipBtn" class="preview-control"><i class="fa-solid fa-camera-rotate"></i><span>Flip</span></button>
+      <button id="previewLightBtn" class="preview-control"><i class="fa-solid fa-sun"></i><span>Light</span></button>
+      <button id="startVideoCallBtn" class="preview-call-btn"><i class="fa-solid fa-video"></i><span>Start call</span></button>
+    </div>
+  </div>
+</div>
+
+<div id="callOverlay" class="call-overlay hidden">
+  <div class="call-shell">
+    <header class="call-header">
+      <div class="call-title-wrap">
+        <div class="call-mini-avatar"><img id="callHeaderAvatar" alt=""></div>
+        <div><b id="callHeaderName">Call</b><span id="callStatus">Connecting…</span><span id="callTimer" class="call-timer hidden" aria-live="polite">00:00</span></div>
+      </div>
+      <span id="callNetwork" class="call-network"><i class="fa-solid fa-signal"></i> Good</span>
+    </header>
+    <div id="remoteVideos" class="remote-videos"></div>
+    <div id="localVideoWrap" class="local-video-wrap hidden"><div id="localVideo"></div><span class="local-video-label">You</span></div>
+    <div id="callEmpty" class="call-empty"><i class="fa-solid fa-phone-volume"></i><span>কল সংযোগ হচ্ছে…</span></div>
+    <div id="audioOutputMenu" class="audio-output-menu hidden" role="menu" aria-label="Audio output">
+      <div class="audio-output-title"><i class="fa-solid fa-volume-high"></i><span>Audio output</span></div>
+      <div id="audioOutputDevices"></div>
+    </div>
+
+    <div id="callParticipantsPanel" class="call-participants-panel hidden" role="dialog" aria-label="Group call participants">
+      <div class="call-participants-head"><div><b>Call participants</b><small id="callParticipantsSub">0 participants</small></div><button id="closeCallParticipantsBtn" class="preview-icon-btn"><i class="fa-solid fa-xmark"></i></button></div>
+      <div id="callParticipantsList" class="call-participants-list"></div>
+    </div>
+    <div class="call-controls">
+      <button id="muteCallBtn" class="call-control"><i class="fa-solid fa-microphone"></i><span>Mute</span></button>
+      <button id="cameraCallBtn" class="call-control"><i class="fa-solid fa-video"></i><span>Camera</span></button>
+      <button id="speakerCallBtn" class="call-control active"><i class="fa-solid fa-volume-high"></i><span>Speaker</span></button>
+    <button id="callParticipantsBtn" class="call-control group-only-control hidden" title="Participants"><i class="fa-solid fa-user-group"></i><span>People</span><b id="callParticipantBadge" class="call-participant-badge">0</b></button>
+
+      <button id="endCallBtn" class="call-control end"><i class="fa-solid fa-phone-slash"></i><span>End</span></button>
+    </div>
+  </div>
+</div>
+
+<div id="moreMenu" class="more-menu hidden">
+  <div class="more-menu-head"><img id="menuAvatar" alt=""><div><b id="menuName">User</b><small id="menuEmail"></small></div></div>
+  <button data-menu-action="profile"><i class="fa-regular fa-user"></i><span>প্রোফাইল</span></button>
+  <button data-menu-action="settings"><i class="fa-solid fa-gear"></i><span>সেটিংস</span></button>
+  <button data-menu-action="share"><i class="fa-solid fa-share-nodes"></i><span>শেয়ার অ্যাপ</span></button>
+  <button data-menu-action="support"><i class="fa-regular fa-life-ring"></i><span>সাপোর্ট / মতামত</span></button>
+  <div class="menu-divider"></div>
+  <button class="menu-danger" data-menu-action="logout"><i class="fa-solid fa-right-from-bracket"></i><span>লগআউট</span></button>
+</div>
+
+<div id="aboutModal" class="modal hidden"><div class="modal-card policy-card about-card">
+  <button class="modal-close" data-close="aboutModal"><i class="fa-solid fa-xmark"></i></button>
+  <div class="policy-icon"><i class="fa-solid fa-circle-info"></i></div>
+  <h3>আমাদের সম্পর্কে</h3>
+  <div class="policy-scroll about-scroll">
+    <p>আমাদের এই মেসেজিং অ্যাপটি তৈরি করা হয়েছে মূলত <b>দ্রুত, নিরাপদ এবং বাধাহীন যোগাযোগের</b> কথা মাথায় রেখে। আমরা বিশ্বাস করি, ইন্টারনেট কানেকশন দুর্বল থাকলেও আপনার গুরুত্বপূর্ণ যোগাযোগ যেন থমকে না যায়। তাই আধুনিক প্রযুক্তির সমন্বয়ে অ্যাপটিকে করা হয়েছে <b>সুপার-ফাস্ট, ডেটা-সাশ্রয়ী এবং অত্যন্ত ইউজার-ফ্রেন্ডলি</b>।</p>
+    <h4>ডেভেলপার সম্পর্কে</h4>
+    <p>অ্যাপটির ডিজাইন, ডেভেলপমেন্ট এবং সার্বিক তত্ত্বাবধানে রয়েছি আমি, <b>শাহাদৎ</b>।</p>
+    <p>ব্যবহারকারীদের জন্য একটি সহজ, সুন্দর, নির্ভরযোগ্য ও প্রিমিয়াম চ্যাটিং অভিজ্ঞতা নিশ্চিত করাই আমার মূল লক্ষ্য। ব্যবহারকারীদের বাস্তব প্রয়োজন, মতামত এবং অভিজ্ঞতাকে গুরুত্ব দিয়ে অ্যাপটিকে ধারাবাহিকভাবে উন্নত করার চেষ্টা করছি।</p>
+    <hr>
+    <h4>সাহায্য ও পরামর্শ</h4>
+    <p>অ্যাপটি ব্যবহার করতে গিয়ে আপনি যদি কোনো সমস্যার সম্মুখীন হন, কিংবা অ্যাপটির উন্নতিতে আপনার কোনো মূল্যবান পরামর্শ থাকে, তাহলে নির্দ্বিধায় আমাদের সঙ্গে যোগাযোগ করতে পারেন।</p>
+    <p>আপনাদের যেকোনো <b>গঠনমূলক মতামত, পরামর্শ ও সমস্যার কথা</b> আমরা সাদরে গ্রহণ করি এবং যথাসম্ভব দ্রুত সমাধানের চেষ্টা করি।</p>
+    <div class="support-contact"><span>📧</span><div><small>ইমেইল</small><b>hkshahadot24@gmail.com</b></div></div>
+    <p class="about-note"><b>বিঃদ্রঃ</b> ইমেইল করার সময় Subject লাইনে আপনার সমস্যাটি সংক্ষেপে উল্লেখ করলে বিষয়টি বুঝতে এবং দ্রুত সমাধান দিতে আমাদের সুবিধা হবে।</p>
+  </div>
+  <button id="aboutEmailBtn" class="primary-btn about-email-btn"><i class="fa-regular fa-envelope"></i> ইমেইল করুন</button>
+</div></div>
+
+<div id="privacyModal" class="modal hidden"><div class="modal-card policy-card">
+  <button class="modal-close" data-close="privacyModal"><i class="fa-solid fa-xmark"></i></button>
+  <div class="policy-icon"><i class="fa-solid fa-shield-halved"></i></div>
+  <h3>Privacy Policy</h3>
+  <div class="policy-scroll">
+    <p><b>Google Sign-in data:</b> এই অ্যাপ Google OAuth-এর মাধ্যমে আপনার Google account থেকে সাধারণত নাম, email address এবং profile photo পায়।</p>
+    <p><b>ব্যবহারের উদ্দেশ্য:</b> পরিচয় নিশ্চিত করা, প্রোফাইল দেখানো, বন্ধু/চ্যাটে সঠিক ব্যবহারকারী শনাক্ত করা এবং অ্যাপের realtime messaging চালাতে এই তথ্য ব্যবহার করা হয়।</p>
+    <p><b>Messaging data:</b> আপনি পাঠানো message, image link এবং file sharing metadata অ্যাপের messaging database-এ সংরক্ষিত হতে পারে যাতে conversation realtime-এ দেখানো যায়।</p>
+    <p><b>মিডিয়া সেবা:</b> ছবি ও ফাইল সংরক্ষণের জন্য তৃতীয় পক্ষের upload service ব্যবহার হতে পারে। সংবেদনশীল তথ্য পাঠানোর আগে সতর্ক থাকুন।</p>
+    <p><b>Account deletion:</b> Settings → Account Management থেকে আপনার app account ও app-stored data মুছে ফেলার অনুরোধ করতে পারবেন। Google account নিজে এই অ্যাপ থেকে মুছে ফেলা হয় না।</p>
+    <p><b>নোট:</b> এই পেজটি অ্যাপের বর্তমান data flow ব্যাখ্যা করার জন্য একটি starter policy। production release-এর আগে আপনার support email, developer/company identity, retention period এবং applicable legal requirements অনুযায়ী এটিকে চূড়ান্ত করা উচিত।</p>
+  </div>
+</div></div>
+
+<div id="profileModal" class="modal hidden"><div class="modal-card">
+  <button class="modal-close" data-close="profileModal"><i class="fa-solid fa-xmark"></i></button>
+  <h3>Edit profile</h3>
+  <label>Name<input id="editName" maxlength="80"></label>
+  <label>Photo URL<input id="editPhoto" type="url" placeholder="https://..."></label>
+  <label>Bio<textarea id="editBio" maxlength="300" rows="3"></textarea></label>
+  <button id="saveProfile" class="primary-btn">Save changes</button>
+</div></div>
+
+<div id="groupModal" class="modal hidden"><div class="modal-card group-create-card">
+  <button class="modal-close" data-close="groupModal"><i class="fa-solid fa-xmark"></i></button>
+  <h3>নতুন গ্রুপ তৈরি করুন</h3>
+  <label>গ্রুপের নাম<input id="groupNameInput" maxlength="80" placeholder="যেমন: বন্ধুরা"></label>
+  <div class="group-member-head"><b>বন্ধু নির্বাচন করুন</b><small id="groupMemberCount">0 জন নির্বাচিত</small></div>
+  <div id="groupFriendPicker" class="group-friend-picker"></div>
+  <button id="saveGroupBtn" class="primary-btn"><i class="fa-solid fa-users"></i> গ্রুপ তৈরি করুন</button>
+</div></div>
+
+<div id="userModal" class="modal hidden"><div class="modal-card user-card">
+  <button class="modal-close" data-close="userModal"><i class="fa-solid fa-xmark"></i></button>
+  <img id="userModalAvatar" class="user-modal-avatar" alt="">
+  <h3 id="userModalName"></h3><p id="userModalEmail"></p><p id="userModalBio"></p>
+  <button id="userModalChat" class="primary-btn">Open chat</button>
+</div></div>
+
+<div id="lightbox" class="lightbox hidden"><button id="closeLightbox"><i class="fa-solid fa-xmark"></i></button><img id="lightboxImg" alt=""></div>
+<script src="./assets/js/app.js?v=5"></script>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
+}
+</script>
+</body>
+</html>

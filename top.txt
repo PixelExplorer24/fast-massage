@@ -1,0 +1,8 @@
+Firebase SDKs used by this build:
+- firebase-app-compat 10.14.1
+- firebase-auth-compat 10.14.1
+- firebase-database-compat 10.14.1
+- firebase-analytics-compat 10.14.1
+- AgoraRTC 4.24.0
+
+Cloud Firestore is NOT used by this build.
