@@ -114,6 +114,54 @@ let authResolved=false;
 const AGORA_APP_ID="addaf4af54e845beb818de869a7de813";
 let agoraClient=null,localMicTrack=null,localCamTrack=null,activeCall=null,incomingCall=null,callUnsub=null,callInviteUnsub=null,remoteUsers=new Map();
 let callTimerInterval=null,callStartedAt=0;
+const callEventLocks=new Set();
+function callMillis(v){return v?.toMillis?v.toMillis():rtdbToMillis(v)}
+function callEventDuration(c){
+  const start=callMillis(c?.acceptedAt);
+  const end=callMillis(c?.endedAt)||Date.now();
+  return start&&end>start?Math.max(0,end-start):0;
+}
+function callDurationText(ms){
+  const total=Math.max(0,Math.round(Number(ms||0)/1000));
+  const h=Math.floor(total/3600),m=Math.floor((total%3600)/60),s=total%60;
+  return h?`${h}h ${String(m).padStart(2,"0")}m`:m?`${m}m ${String(s).padStart(2,"0")}s`:`${s}s`;
+}
+function callEventLabel(m){
+  const video=m.callMode==="video", type=video?"ভিডিও কল":"অডিও কল";
+  const mine=String(m.callCallerUid||m.callerUid||m.senderUid)===String(me?.uid);
+  const outcome=m.callOutcome||"missed";
+  if(outcome==="completed"){
+    return `<i class="fa-solid ${video?"fa-video":"fa-phone"}"></i><span>${mine?"Outgoing":"Incoming"} ${type}<small>${esc(callDurationText(m.callDurationMs||0))}</small></span>`;
+  }
+  if(mine)return `<i class="fa-solid ${video?"fa-video-slash":"fa-phone-slash"}"></i><span>${outcome==="rejected"?`${type} declined`:`${type} · No answer`}<small>Missed call</small></span>`;
+  return `<i class="fa-solid ${video?"fa-video-slash":"fa-phone-slash"}"></i><span>Missed ${type}<small>${outcome==="rejected"?"Call declined":"No answer"}</small></span>`;
+}
+async function saveCallToChat(c,forcedStatus){
+  if(!c?.callId||!me)return;
+  const key=String(c.callId);
+  if(callEventLocks.has(key))return;
+  callEventLocks.add(key);
+  try{
+    const status=forcedStatus||c.status||"ended";
+    const durationMs=status==="accepted"||c.acceptedAt?callEventDuration(c):0;
+    const outcome=(status==="ended"&&durationMs>0)?"completed":(status==="rejected"?"rejected":"missed");
+    const participants=Array.isArray(c.recipientUids)?c.recipientUids:[];
+    const otherUid=c.groupId?null:(participants.find(x=>String(x)!==String(me.uid))||c.receiverUid||c.callerUid);
+    const memberUids=c.memberUids||participants.concat([c.callerUid]).filter(Boolean);
+    const ref=MESSAGES().doc(`call_${key}`);
+    const payload={
+      senderUid:me.uid,
+      receiverUid:c.groupId?null:otherUid,
+      groupId:c.groupId||null,
+      groupMemberUids:c.groupId?memberUids:null,
+      groupMemberMap:c.groupId?Object.fromEntries(memberUids.map(x=>[String(x),true])):null,
+      text:"",imageUrls:[],files:[],createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false,
+      type:"call",callId:key,callCallerUid:c.callerUid,callCallerName:c.callerName||"User",callCallerPhoto:c.callerPhoto||null,
+      callMode:c.mode||"audio",callOutcome:outcome,callDurationMs:durationMs,callEndedAt:c.endedAt||Date.now()
+    };
+    await ref.set(payload,{merge:true});
+  }catch(e){console.warn("saveCallToChat",e)}finally{callEventLocks.delete(key)}
+}
 const CALL_TOKEN=null; // Keep null when Agora App Certificate/token authentication is disabled.
 function callChannel(id){return "fm_"+String(id).replace(/[^a-zA-Z0-9_-]/g,"").slice(0,55)}
 function callTarget(){return activeFriend?.isGroup?activeFriend.uid:activeFriend?.uid}
@@ -277,7 +325,7 @@ async function launchCall(mode){
   const callId=CALLS().doc().id;
   const participants=activeFriend.isGroup?(activeFriend.memberUids||[]).filter(x=>x!==me.uid):[activeFriend.uid];
   const ref=CALLS().doc(callId);
-  const payload={callId,callerUid:me.uid,callerName:profile?.displayName||me.displayName||"User",callerPhoto:profile?.photoURL||me.photoURL||null,mode,channel,groupId:activeFriend.isGroup?activeFriend.uid:null,recipientUids:participants,recipientMap:Object.fromEntries(participants.map(x=>[String(x),true])),status:"ringing",createdAt:firebase.firestore.FieldValue.serverTimestamp()};
+  const payload={callId,callerUid:me.uid,callerName:profile?.displayName||me.displayName||"User",callerPhoto:profile?.photoURL||me.photoURL||null,mode,channel,groupId:activeFriend.isGroup?activeFriend.uid:null,memberUids:activeFriend.isGroup?(activeFriend.memberUids||[]):[],recipientUids:participants,recipientMap:Object.fromEntries(participants.map(x=>[String(x),true])),status:"ringing",createdAt:firebase.firestore.FieldValue.serverTimestamp()};
   await ref.set(payload);
   activeCall={callId,mode,channel,ref,caller:true,groupId:activeFriend.isGroup?activeFriend.uid:null};watchActiveCall();
   $("callHeaderName").textContent=activeFriend.isGroup?`${activeFriend.name||"Group"} · Group call`:activeFriend.displayName||"Call";
@@ -306,16 +354,25 @@ async function acceptCall(){
   try{await setupAgora(c.mode,c.channel);setCallStatus(c.mode==="video"?"ভিডিও কল চলছে":"অডিও কল চলছে");startCallTimer(Date.now());await activeCall.ref.set({status:"accepted",acceptedBy:me.uid,acceptedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true})}
   catch(e){console.error(e);toast("কল গ্রহণ করা যায়নি");await endCall(true)}
 }
-async function rejectIncomingCall(){const c=incomingCall;if(!c)return;$("callInviteModal").classList.add("hidden");incomingCall=null;try{await CALLS().doc(c.callId).set({status:"rejected",rejectedBy:me.uid,rejectedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true})}catch(_){}}
+async function rejectIncomingCall(){const c=incomingCall;if(!c)return;$("callInviteModal").classList.add("hidden");incomingCall=null;try{const endedAt=Date.now();await CALLS().doc(c.callId).set({status:"rejected",rejectedBy:me.uid,rejectedAt:firebase.firestore.FieldValue.serverTimestamp(),endedAt},{merge:true});await saveCallToChat({...c,status:"rejected",endedAt},"rejected")}catch(_){}}
 async function endCall(silent=false){
   const c=activeCall;activeCall=null;
   if(callUnsub){try{callUnsub()}catch(_){} callUnsub=null;}
-  try{localMicTrack?.stop();localMicTrack?.close();localCamTrack?.stop();localCamTrack?.close()}catch(_){}
+  try{localMicTrack?.stop();localMicTrack?.close();localCamTrack?.stop();localCamTrack?.close()}catch(_){ }
   localMicTrack=localCamTrack=null;
-  try{if(agoraClient){await agoraClient.leave();agoraClient.removeAllListeners();}}catch(_){}
+  try{if(agoraClient){await agoraClient.leave();agoraClient.removeAllListeners();}}catch(_){ }
   agoraClient=null;pinnedCallParticipant=null;mutedRemoteParticipants.clear();closeCallParticipants();cleanupCallUI();incomingCall=null;
-  if(c&&!silent)try{await c.ref.set({status:"ended",endedBy:me.uid,endedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true})}catch(_){}
+  if(c&&!silent){
+    try{
+      const snap=await c.ref.get();
+      const current={...(snap.data()||{}),...c};
+      const endedAt=Date.now();
+      await c.ref.set({status:"ended",endedBy:me.uid,endedAt},{merge:true});
+      await saveCallToChat({...current,status:"ended",endedAt},"ended");
+    }catch(e){console.warn("endCall",e)}
+  }
 }
+
 
 let selectedPlaybackDevice="default";
 let playbackMode="speaker";
@@ -377,7 +434,8 @@ function watchActiveCall(){
   if(!activeCall)return;
   callUnsub=activeCall.ref.onSnapshot(s=>{
     if(!s.exists)return;const c=s.data();
-    if(c.status==="accepted"&&!callStartedAt){setCallStatus(c.mode==="video"?"ভিডিও কল চলছে":"অডিও কল চলছে");startCallTimer(c.acceptedAt?.toMillis?.()||Date.now())}
+    activeCall.lastData=c;
+    if(c.status==="accepted"&&!callStartedAt){setCallStatus(c.mode==="video"?"ভিডিও কল চলছে":"অডিও কল চলছে");startCallTimer(callMillis(c.acceptedAt)||Date.now())}
     if(c.kickedUids?.map(String).includes(String(me?.uid))){toast("আপনাকে group call থেকে remove করা হয়েছে");endCall(true);return;}
     if(c.status==="ended"||c.status==="rejected")endCall(true);
   });
@@ -391,6 +449,21 @@ const bytes=n=>{if(!n)return"0 B";const u=["B","KB","MB","GB"];let i=Math.floor(
 function toast(t){const e=$("toast");e.textContent=t;e.classList.add("show");clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove("show"),2400)}
 function isFriend(uid){return friends.some(f=>f.friendUid===uid)}
 function closeAllModals(){document.querySelectorAll(".modal").forEach(x=>x.classList.add("hidden"))}
+function installCallMessageStyles(){
+  if($("callMessageStyles"))return;
+  const st=document.createElement("style");st.id="callMessageStyles";st.textContent=`
+    .call-bubble{min-width:190px;padding:11px 13px!important}
+    .call-event{display:flex;align-items:center;gap:10px;font-weight:800;font-size:12px}
+    .call-event>i{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:#eef2ff;color:#4f46e5;font-size:14px}
+    .call-event>span{display:block;min-width:0}
+    .call-event small{display:block;font-size:9px;font-weight:600;opacity:.7;margin-top:3px}
+    .mine .call-event>i{background:#ffffff24;color:#fff}
+    .call-bubble.missed .call-event>i{background:#fef2f2;color:#dc2626}
+    .mine .call-bubble.missed .call-event>i{background:#ffffff24;color:#fecaca}
+    .call-row .msg-time{margin-top:7px}
+  `;document.head.appendChild(st);
+}
+installCallMessageStyles();
 
 // ===== SPA back navigation =====
 // Internal screens use a hash sub-link so browser Back stays inside the app
@@ -490,6 +563,11 @@ function hydrateLocalCache(){
   renderPeople();renderGroups();renderChats();updateStats();
 }
 function cacheMessages(){saveLocal("messages",[...messageMap.values()].slice(-800))}
+function callDurationPreview(m){
+  const video=m.callMode==="video",type=video?"ভিডিও কল":"অডিও কল";
+  if(m.callOutcome==="completed")return `${type} · ${callDurationText(m.callDurationMs||0)}`;
+  return `মিসড ${type}`;
+}
 function renderChats(){
   if(!me)return;
   const q=($("chatSearch")?.value||"").trim().toLowerCase();
@@ -507,11 +585,11 @@ function renderChats(){
   const box=$("chatList");
   const groupRows=groups.filter(g=>!q||(g.name||"").toLowerCase().includes(q)).map(g=>{
     const m=[...messageMap.values()].filter(x=>x.groupId===g.id).sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0))[0];
-    const preview=m?.text||((m?.imageUrls||[]).length?"📷 ছবি":m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
+    const preview=m?.type==="call"?((m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(m)):m?.text||((m?.imageUrls||[]).length?"📷 ছবি":m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
     return `<button class="chat-item" onclick="openGroupChat('${esc(g.id)}')"><span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${esc(preview)}</small></span><time class="item-meta">${m?time(m.createdAt):"Group"}</time></button>`;
   }).join("");
   const personal=rows.map(r=>{
-    const preview=r.m?.text||((r.m?.imageUrls||[]).length?"📷 Image":r.m?.fileName?"📎 "+r.m.fileName:"Start a conversation");
+    const preview=r.m?.type==="call"?((r.m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(r.m)):r.m?.text||((r.m?.imageUrls||[]).length?"📷 Image":r.m?.fileName?"📎 "+r.m.fileName:"Start a conversation");
     return `<button class="chat-item" onclick="openChat('${esc(r.uid)}')"><img class="avatar" src="${esc(avatar(r.u))}"><span class="item-copy"><strong>${esc(r.u.displayName||r.u.email||"User")}</strong><small>${esc(preview)}</small></span><time class="item-meta">${r.m?time(r.m.createdAt):"Friend"}</time></button>`;
   }).join("");
   box.innerHTML=groupRows+personal||`<div class="empty"><i class="fa-regular fa-comments" style="font-size:28px;display:block;margin-bottom:10px"></i>কোনো conversation নেই। People থেকে একজনকে বেছে নিয়ে chat শুরু করুন।</div>`;
@@ -591,6 +669,7 @@ window.openUser=uid=>{const u=users.find(x=>x.uid===uid)||friends.find(x=>x.frie
 function subscribeChat(uid){chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];const ref=MESSAGES();if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(renderMessages));}else{chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(renderMessages));chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(renderMessages));}}
 function messageHTML(m){
   const mine=m.senderUid===me?.uid;
+  if(m.type==="call")return `<div class="msg-row ${mine?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
   const imgs=Array.isArray(m.imageUrls)?m.imageUrls:[];
   const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
   const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
@@ -626,6 +705,7 @@ function renderMessages(){
   const box=$("messages");
   const escUrl=u=>esc(u||"");
   box.innerHTML=arr.length?arr.map(m=>{
+    if(m.type==="call")return `<div class="msg-row ${m.senderUid===me.uid?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
     const mine=m.senderUid===me.uid,imgs=m.imageUrls||[];
     const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
     const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
