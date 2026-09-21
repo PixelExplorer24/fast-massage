@@ -109,7 +109,8 @@ const CALLS=()=>new RTCollection("calls");
 const IMAGE_UPLOAD_KEY="1abc9f66636c45ace1d0952e080d153d";
 const FILE_UPLOAD_ENDPOINT="https://upload.gofile.io/uploadfile";
 let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=[],activeFriend=null,chatUnsubs=[],listUnsubs=[],typingUnsub=null,typingTimer=null,attachedImages=[],attachedFiles=[],messageMap=new Map(),activeMessageMap=new Map(),peopleTab="friends";
-const CACHE_PREFIX="fm_cache_v10_";
+const CACHE_PREFIX="fm_cache_v11_";
+let friendsSyncReady=false,groupsSyncReady=false,messagesSyncReady=false;
 let authResolved=false;
 const AGORA_APP_ID="addaf4af54e845beb818de869a7de813";
 let agoraClient=null,localMicTrack=null,localCamTrack=null,activeCall=null,incomingCall=null,callUnsub=null,callInviteUnsub=null,notificationUnsub=null,remoteUsers=new Map();
@@ -621,6 +622,7 @@ function stopListeners(){
 }
 function startListeners(){
   stopListeners();
+  friendsSyncReady=false;groupsSyncReady=false;messagesSyncReady=false;
   // The RTDB compatibility layer reads collection roots and filters client-side.
   // Keep ONE realtime listener per collection so the home chat list, people list,
   // groups and messages all update immediately without a manual refresh.
@@ -645,7 +647,10 @@ function startListeners(){
 
   safeListen("friends",FRIENDS(),s=>{
     friends=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.ownerUid===me.uid);
-    saveLocal("friends",friends);renderPeople();renderGroups();renderChats();updateStats();
+    friendsSyncReady=true;
+    saveLocal("friends",friends);
+    saveLocal("chatRooms",buildChatRoomCache());
+    renderPeople();renderGroups();renderChats();updateStats();
   });
 
   safeListen("friendRequests",REQUESTS(),s=>{
@@ -659,14 +664,18 @@ function startListeners(){
   safeListen("groups",GROUPS(),s=>{
     groups=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>(x.memberUids||[]).some(id=>String(id)===String(me.uid)))
       .sort((a,b)=>(b.createdAt?.toMillis?.()||Number(b.createdAt)||0)-(a.createdAt?.toMillis?.()||Number(a.createdAt)||0));
-    saveLocal("groups",groups);renderGroups();renderChats();
+    groupsSyncReady=true;
+    saveLocal("groups",groups);
+    saveLocal("chatRooms",buildChatRoomCache());
+    renderGroups();renderChats();
   });
 
   safeListen("messages",MESSAGES(),s=>{
     const all=s.docs.map(d=>({id:d.id,...d.data()}));
     const mine=all.filter(m=>m.senderUid===me.uid||m.receiverUid===me.uid||(Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(id=>String(id)===String(me.uid))));
     messageMap=new Map(mine.map(m=>[m.id,m]));
-    cacheMessages();renderChats();updateStats();if(activeFriend)renderMessages();
+    messagesSyncReady=true;
+    cacheMessages();saveLocal("chatRooms",buildChatRoomCache());renderChats();updateStats();if(activeFriend)renderMessages();
   });
 }
 function cacheKey(name){return CACHE_PREFIX+name+(me?"_"+me.uid:"")}
@@ -677,7 +686,16 @@ function hydrateLocalCache(){
   const u=loadLocal("users",[]),f=loadLocal("friends",[]),r=loadLocal("requests",[]),sr=loadLocal("sentRequests",[]),g=loadLocal("groups",[]),m=loadLocal("messages",[]);
   if(Array.isArray(u))users=u; if(Array.isArray(f))friends=f; if(Array.isArray(r))requests=r; if(Array.isArray(sr))sentRequests=sr; if(Array.isArray(g))groups=g;
   messageMap=new Map((Array.isArray(m)?m:[]).map(x=>[x.id,x]));
+  const cachedRooms=loadLocal("chatRooms",[]);
+  if(Array.isArray(cachedRooms)&&cachedRooms.length&&!friends.length)friends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend||x).filter(Boolean);
   renderPeople();renderGroups();renderChats();updateStats();
+}
+function buildChatRoomCache(){
+  if(!me)return [];
+  const rooms=[];
+  friends.forEach(f=>rooms.push({kind:"friend",friend:{...f}}));
+  groups.forEach(g=>rooms.push({kind:"group",group:{...g}}));
+  return rooms;
 }
 function cacheMessages(){saveLocal("messages",[...messageMap.values()].slice(-800))}
 function callDurationPreview(m){
@@ -696,7 +714,10 @@ function renderChats(){
     if(uid&&!by.has(uid))by.set(uid,m);
   }
   // Show every accepted friend in the Home chat list, even before the first message.
-  friends.forEach(f=>{if(f.friendUid&&!by.has(f.friendUid))by.set(f.friendUid,null)});
+  // On a hard refresh, render the last known room list immediately; the realtime
+  // listener then replaces it with the current Firebase state.
+  const roomFriends=(friendsSyncReady||friends.length)?friends:loadLocal("chatRooms",[]).filter(x=>x.kind==="friend").map(x=>x.friend||x).filter(Boolean);
+  roomFriends.forEach(f=>{if(f.friendUid&&!by.has(f.friendUid))by.set(f.friendUid,null)});
   let rows=[...by.entries()].map(([uid,m])=>({uid,m,u:users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid)||{uid,displayName:"User"}}));
   if(q)rows=rows.filter(r=>(r.u.displayName||"").toLowerCase().includes(q)||(r.u.email||"").toLowerCase().includes(q)||(r.m?.text||"").toLowerCase().includes(q));
   const box=$("chatList");
