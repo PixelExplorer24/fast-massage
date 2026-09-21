@@ -1,1 +1,1146 @@
+const firebaseConfig={
+  apiKey:"AIzaSyDc-XZGguSKRxZUIG6s5h0sjhcuJrtZQZc",
+  authDomain:"fast-massage-3ac80.firebaseapp.com",
+  databaseURL:"https://fast-massage-3ac80-default-rtdb.firebaseio.com",
+  projectId:"fast-massage-3ac80",
+  storageBucket:"fast-massage-3ac80.firebasestorage.app",
+  messagingSenderId:"114872273052",
+  appId:"1:114872273052:web:f0873cc1f474b884ef4559",
+  measurementId:"G-Y6YHPFTQQ8"
+};
 
+firebase.initializeApp(firebaseConfig);
+const auth=firebase.auth(),db=firebase.database(),APP="fast-massage-3ac80";
+
+// -----------------------------------------------------------------------------
+// Firestore-shaped compatibility layer backed entirely by Firebase Realtime DB.
+// The UI/business logic below can keep its existing collection/doc/query calls,
+// while every read/write is actually performed through Realtime Database.
+// -----------------------------------------------------------------------------
+const RTDB_DELETE=Symbol("RTDB_DELETE"),RTDB_SERVER_TIMESTAMP=Symbol("RTDB_SERVER_TIMESTAMP");
+const RTDB_ARRAY_UNION=Symbol("RTDB_ARRAY_UNION");
+function rtdbNow(){return Date.now()}
+function rtdbToMillis(v){
+  if(v&&typeof v.toMillis==="function")return v.toMillis();
+  if(v&&v.__rtdbTimestamp!=null)return Number(v.__rtdbTimestamp);
+  return typeof v==="number"?v:Number(v)||0;
+}
+function rtdbResolve(v,oldValue){
+  if(v===RTDB_SERVER_TIMESTAMP)return rtdbNow();
+  if(v===RTDB_DELETE)return undefined;
+  if(v&&v.__rtdbArrayUnion)return Array.from(new Set([...(Array.isArray(oldValue)?oldValue:[]),...v.values]));
+  if(v&&v.__rtdbTimestamp!=null)return Number(v.__rtdbTimestamp);
+  if(Array.isArray(v))return v.map((x,i)=>rtdbResolve(x,oldValue?.[i]));
+  if(v&&typeof v==="object"){
+    const out={};
+    Object.entries(v).forEach(([k,x])=>{
+      const y=rtdbResolve(x,oldValue?.[k]);
+      if(y!==undefined)out[k]=y;
+    });
+    return out;
+  }
+  return v;
+}
+function mergeObject(base,patch){
+  const out=base&&typeof base==="object"&&!Array.isArray(base)?{...base}:{};
+  Object.entries(patch||{}).forEach(([k,v])=>{
+    const y=rtdbResolve(v,out[k]);
+    if(y===undefined)delete out[k];else out[k]=y;
+  });
+  return out;
+}
+class RTDocSnap{
+  constructor(id,value){this.id=id;this._value=value==null?null:value;this.exists=this._value!==null&&this._value!==undefined}
+  data(){return this.exists?this._value:undefined}
+}
+class RTQuerySnap{
+  constructor(docs,changes=[]){this.docs=docs;this._changes=changes}
+  docChanges(){return this._changes}
+}
+class RTDoc{
+  constructor(path,id){this.path=path.replace(/^\/|\/$/g,"");this.id=id}
+  get ref(){return this}
+  child(name){return new RTDoc(`${this.path}/${name}`,name)}
+  collection(name){return new RTCollection(`${this.path}/${name}`)}
+  async get(){const snap=await db.ref(this.path).once("value");return new RTDocSnap(this.id,snap.val())}
+  onSnapshot(cb,err){let first=true,previous=null;const r=db.ref(this.path);const fn=s=>{try{const val=s.val();const snap=new RTDocSnap(this.id,val);if(first){previous=val;first=false}else previous=val;cb(snap)}catch(e){err?.(e)}};r.on("value",fn,e=>err?.(e));return()=>r.off("value",fn)}
+  async set(data,opts={}){
+    const ref=db.ref(this.path);
+    if(opts?.merge){const old=(await ref.once("value")).val()||{};return ref.set(mergeObject(old,data))}
+    return ref.set(rtdbResolve(data,null));
+  }
+  async update(data){const old=(await db.ref(this.path).once("value")).val()||{};return db.ref(this.path).set(mergeObject(old,data))}
+  async delete(){return db.ref(this.path).remove()}
+}
+class RTCollection{
+  constructor(path){this.path=path.replace(/^\/|\/$/g,"");this.filters=[]}
+  doc(id){const key=id||db.ref(this.path).push().key;return new RTDoc(`${this.path}/${key}`,key)}
+  add(data){const key=db.ref(this.path).push().key;const ref=new RTDoc(`${this.path}/${key}`,key);return ref.set(data).then(()=>ref)}
+  where(field,op,value){const q=new RTQuery(this.path,this.filters);return q.where(field,op,value)}
+  async get(){return new RTQuery(this.path,[]).get()}
+  onSnapshot(cb,err){return new RTQuery(this.path,[]).onSnapshot(cb,err)}
+}
+class RTQuery{
+  constructor(path,filters=[]){this.path=path;this.filters=[...filters]}
+  where(field,op,value){return new RTQuery(this.path,[...this.filters,{field,op,value}])}
+  _match(obj){return this.filters.every(f=>{const a=obj?.[f.field],b=f.value;switch(f.op){case "==":return a===b;case ">":return rtdbToMillis(a)>rtdbToMillis(b);case ">=":return rtdbToMillis(a)>=rtdbToMillis(b);case "<":return rtdbToMillis(a)<rtdbToMillis(b);case "<=":return rtdbToMillis(a)<=rtdbToMillis(b);case "array-contains":return Array.isArray(a)&&a.some(x=>String(x)===String(b));default:return false}})}
+  async _read(){const snap=await db.ref(this.path).once("value");const raw=snap.val()||{};return Object.entries(raw).filter(([,v])=>v&&this._match(v)).map(([id,v])=>new RTDocSnap(id,v))}
+  async get(){return new RTQuerySnap(await this._read())}
+  onSnapshot(cb,err){let previous=new Map(),first=true;const r=db.ref(this.path);const fn=async snap=>{try{const raw=snap.val()||{};const current=new Map(Object.entries(raw).filter(([,v])=>v&&this._match(v)));const changes=[];for(const [id,v] of current){if(!previous.has(id))changes.push({type:"added",doc:new RTDocSnap(id,v)});else if(JSON.stringify(previous.get(id))!==JSON.stringify(v))changes.push({type:"modified",doc:new RTDocSnap(id,v)})}for(const [id,v] of previous)if(!current.has(id))changes.push({type:"removed",doc:new RTDocSnap(id,v)});const docs=[...current.entries()].map(([id,v])=>new RTDocSnap(id,v));previous=current;cb(new RTQuerySnap(docs,first?docs.map(d=>({type:"added",doc:d})):changes));first=false}catch(e){err?.(e)}};r.on("value",fn,e=>err?.(e));return()=>r.off("value",fn)}
+}
+class RTBatch{
+  constructor(){this.ops=[]}
+  set(ref,data,opts){this.ops.push(()=>ref.set(data,opts));return this}
+  update(ref,data){this.ops.push(()=>ref.update(data));return this}
+  delete(ref){this.ops.push(()=>ref.delete());return this}
+  async commit(){for(const op of this.ops)await op()}
+}
+// Minimal firebase.firestore namespace retained only as a compatibility API.
+firebase.firestore={
+  FieldValue:{serverTimestamp:()=>RTDB_SERVER_TIMESTAMP,delete:()=>RTDB_DELETE,arrayUnion:(...values)=>({__rtdbArrayUnion:true,values})},
+  Timestamp:{now:()=>({__rtdbTimestamp:Date.now(),toMillis(){return this.__rtdbTimestamp}}),fromMillis:(n)=>({__rtdbTimestamp:Number(n)||0,toMillis(){return this.__rtdbTimestamp}})}
+};
+db.batch=()=>new RTBatch();
+db.enablePersistence=()=>Promise.resolve();
+const ROOT=()=>new RTCollection("");
+const USERS=()=>new RTCollection("users"),FRIENDS=()=>new RTCollection("friends"),REQUESTS=()=>new RTCollection("friendRequests"),MESSAGES=()=>new RTCollection("messages"),GROUPS=()=>new RTCollection("groups");
+const CALLS=()=>new RTCollection("calls");
+
+const IMAGE_UPLOAD_KEY="1abc9f66636c45ace1d0952e080d153d";
+const FILE_UPLOAD_ENDPOINT="https://upload.gofile.io/uploadfile";
+let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=[],activeFriend=null,chatUnsubs=[],listUnsubs=[],typingUnsub=null,typingTimer=null,attachedImages=[],attachedFiles=[],messageMap=new Map(),activeMessageMap=new Map(),peopleTab="friends";
+const CACHE_PREFIX="fm_cache_v10_";
+let authResolved=false;
+const AGORA_APP_ID="addaf4af54e845beb818de869a7de813";
+let agoraClient=null,localMicTrack=null,localCamTrack=null,activeCall=null,incomingCall=null,callUnsub=null,callInviteUnsub=null,remoteUsers=new Map();
+let callTimerInterval=null,callStartedAt=0;
+const CALL_TOKEN=null; // Keep null when Agora App Certificate/token authentication is disabled.
+function callChannel(id){return "fm_"+String(id).replace(/[^a-zA-Z0-9_-]/g,"").slice(0,55)}
+function callTarget(){return activeFriend?.isGroup?activeFriend.uid:activeFriend?.uid}
+function participantName(uid){if(String(uid)===String(me?.uid))return "You";const u=users.find(x=>String(x.uid)===String(uid));return u?.displayName||u?.email?.split("@")[0]||"Participant"}
+function setCallStatus(t){if($("callStatus"))$("callStatus").textContent=t}
+function formatCallDuration(ms){const total=Math.max(0,Math.floor(ms/1000));const h=Math.floor(total/3600),m=Math.floor((total%3600)/60),s=total%60;return h?`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`}
+function stopCallTimer(){if(callTimerInterval){clearInterval(callTimerInterval);callTimerInterval=null}callStartedAt=0;const e=$("callTimer");if(e){e.textContent="00:00";e.classList.add("hidden")}}
+function startCallTimer(startMs){stopCallTimer();callStartedAt=Number(startMs)||Date.now();const e=$("callTimer");if(!e)return;e.classList.remove("hidden");const tick=()=>{if(e) e.textContent=formatCallDuration(Date.now()-callStartedAt)};tick();callTimerInterval=setInterval(tick,1000)}
+function setCallNetwork(level){const e=$("callNetwork");if(!e)return;e.className="call-network "+(level==="poor"?"bad":level==="fair"?"ok":"");e.innerHTML=`<i class="fa-solid fa-signal"></i> ${level==="poor"?"Weak":level==="fair"?"Fair":"Good"}`}
+let callTransitionTimer=null;
+function callUi(show){
+  const overlay=$("callOverlay");
+  if(!overlay)return;
+  clearTimeout(callTransitionTimer);
+  $("callParticipantsPanel")?.classList.add("hidden");
+  if(show){
+    overlay.classList.remove("hidden","call-exiting");
+    // Force a fresh animation even when switching rapidly between calls.
+    overlay.classList.remove("call-entering"); void overlay.offsetWidth; overlay.classList.add("call-entering");
+    if($("callEmpty"))$("callEmpty").classList.remove("hidden");
+    callTransitionTimer=setTimeout(()=>overlay.classList.remove("call-entering"),700);
+  }else{
+    overlay.classList.remove("call-entering");
+    if(!overlay.classList.contains("hidden")){
+      overlay.classList.add("call-exiting");
+      callTransitionTimer=setTimeout(()=>{overlay.classList.add("hidden");overlay.classList.remove("call-exiting");},360);
+    }else overlay.classList.add("hidden");
+  }
+}
+function addRemoteVideo(user){
+  const id="remote_"+user.uid; let box=$(id);
+  if(!box){box=document.createElement("div");box.id=id;box.className="remote-video";box.innerHTML=`<div id="${id}_view"></div><div class="remote-label-wrap"><span class="remote-label-name">${esc(participantName(user.uid))}</span><span class="remote-label-status">Live</span></div>`;$("remoteVideos").appendChild(box)}
+  $("callEmpty")?.classList.add("hidden"); user.videoTrack?.play(id+"_view"); updateCallParticipants();
+}
+function removeRemoteVideo(uid){$("remote_"+uid)?.remove();remoteUsers.delete(uid);if(!$("remoteVideos")?.children.length)$("callEmpty")?.classList.remove("hidden");updateCallParticipants()}
+function cleanupCallUI(){stopCallTimer();remoteUsers.forEach((u)=>{try{u.videoTrack?.stop()}catch(_){}});remoteUsers.clear();$("remoteVideos").innerHTML="";$("localVideo").innerHTML="";$("localVideoWrap").classList.add("hidden");$("callEmpty").classList.remove("hidden");callUi(false)}
+function updateCallParticipants(){
+  const header=$("callHeaderName");
+  if(!header)return;
+  const group=activeCall?.groupId ? groups.find(g=>g.uid===activeCall.groupId||g.id===activeCall.groupId) : null;
+  if(activeCall?.groupId){
+    const connected=remoteUsers.size+1;
+    header.textContent=(group?.name||"Group call") + ` · ${connected} participants`;
+  }
+  document.querySelectorAll(".remote-video").forEach(el=>{
+    const uid=el.id.replace(/^remote_/,'');
+    const n=el.querySelector(".remote-label-name");
+    if(n)n.textContent=participantName(uid);
+    el.classList.toggle("pinned",String(uid)===String(pinnedCallParticipant));
+  });
+  const groupBtn=$("callParticipantsBtn");
+  if(groupBtn){
+    groupBtn.classList.toggle("hidden",!activeCall?.groupId);
+    const badge=$("callParticipantBadge");
+    if(badge)badge.textContent=String(remoteUsers.size+1);
+  }
+  if(activeCall?.groupId)renderCallParticipants();
+}
+function callParticipantRows(){
+  const rows=[{uid:me?.uid,name:"You",photo:profile?.photoURL||me?.photoURL||null,self:true}];
+  remoteUsers.forEach(u=>rows.push({uid:String(u.uid),name:participantName(u.uid),photo:users.find(x=>String(x.uid)===String(u.uid))?.photoURL||null,user:u}));
+  return rows;
+}
+function renderCallParticipants(){
+  const list=$("callParticipantsList"),sub=$("callParticipantsSub");
+  if(!list)return;
+  const rows=callParticipantRows();
+  if(sub)sub.textContent=`${rows.length} connected`;
+  list.innerHTML="";
+  rows.forEach(p=>{
+    const row=document.createElement("div");row.className="call-participant-row";
+    const muted=!p.self&&mutedRemoteParticipants.has(String(p.uid));
+    const pinned=String(p.uid)===String(pinnedCallParticipant);
+    row.innerHTML=`<img class="call-participant-avatar" src="${esc(p.photo||avatar(users.find(u=>String(u.uid)===String(p.uid))))}" alt="">
+      <div class="call-participant-info"><b>${esc(p.name)}${p.self?" (You)":""}</b><small>${p.self?"Your microphone":"Connected"}${p.uid===pinnedCallParticipant?" · Pinned":""}</small></div>
+      <div class="call-participant-actions">
+        ${!p.self?`<button class="call-participant-action ${muted?"active":""}" data-call-person-action="mute" data-uid="${esc(p.uid)}" title="${muted?"Unmute":"Mute"}"><i class="fa-solid ${muted?"fa-volume-xmark":"fa-volume-high"}"></i></button>`:""}
+        ${!p.self?`<button class="call-participant-action ${pinned?"active":""}" data-call-person-action="pin" data-uid="${esc(p.uid)}" title="${pinned?"Unpin":"Pin"}"><i class="fa-solid fa-thumbtack"></i></button>`:""}
+        ${!p.self&&activeCall?.caller?`<button class="call-participant-action danger" data-call-person-action="remove" data-uid="${esc(p.uid)}" title="Remove"><i class="fa-solid fa-user-minus"></i></button>`:""}
+      </div>`;
+    list.appendChild(row);
+  });
+  if(!rows.length)list.innerHTML='<div class="call-participant-empty">No connected participants.</div>';
+}
+async function toggleRemoteMute(uid){
+  const key=String(uid),u=remoteUsers.get(uid)||remoteUsers.get(Number(uid));
+  if(!u?.audioTrack)return;
+  const next=!mutedRemoteParticipants.has(key);
+  try{u.audioTrack.setVolume(next?0:100)}catch(_){}
+  next?mutedRemoteParticipants.add(key):mutedRemoteParticipants.delete(key);
+  renderCallParticipants();
+}
+function pinCallParticipant(uid){
+  pinnedCallParticipant=String(pinnedCallParticipant)===String(uid)?null:String(uid);
+  document.querySelectorAll(".remote-video").forEach(el=>el.classList.toggle("pinned",el.id.replace(/^remote_/,'')===pinnedCallParticipant));
+  renderCallParticipants();
+}
+async function removeCallParticipant(uid){
+  if(!activeCall?.caller||!activeCall?.ref)return;
+  if(!confirm("এই participant-কে call থেকে remove করবেন?"))return;
+  const key=String(uid);
+  try{
+    await activeCall.ref.set({kickedUids:firebase.firestore.FieldValue.arrayUnion(key)},{merge:true});
+    const u=remoteUsers.get(uid)||remoteUsers.get(Number(uid));
+    try{u?.audioTrack?.stop()}catch(_){}
+    removeRemoteVideo(uid);remoteUsers.delete(uid);updateCallParticipants();
+    toast("Participant removed");
+  }catch(e){console.error(e);toast("Participant remove করা যায়নি")}
+}
+function closeCallParticipants(){ $("callParticipantsPanel")?.classList.add("hidden"); }
+async function setupAgora(mode,channel){
+  if(!window.AgoraRTC)throw new Error("Agora SDK load হয়নি");
+  if(agoraClient){try{agoraClient.removeAllListeners();await agoraClient.leave()}catch(_){} agoraClient=null}
+  agoraClient=AgoraRTC.createClient({mode:"rtc",codec:"vp8"});
+  agoraClient.on("user-published",async(user,mediaType)=>{await agoraClient.subscribe(user,mediaType);remoteUsers.set(user.uid,user);if(mediaType==="video")addRemoteVideo(user);if(mediaType==="audio"){user.audioTrack?.play();applyPlaybackDevice(user.audioTrack)}});
+  agoraClient.on("user-unpublished",(user,mediaType)=>{if(mediaType==="video")removeRemoteVideo(user.uid)});
+  agoraClient.on("user-left",user=>removeRemoteVideo(user.uid));
+  agoraClient.on("network-quality",q=>{const n=Math.max(q.uplinkNetworkQuality||0,q.downlinkNetworkQuality||0);setCallNetwork(n>=5?"poor":n>=3?"fair":"good")});
+  await agoraClient.join(AGORA_APP_ID,channel,CALL_TOKEN,me?.uid||null);
+  if(mode==="audio"){localMicTrack=await AgoraRTC.createMicrophoneAudioTrack({encoderConfig:"speech_low_quality"})}
+  else{
+    [localMicTrack,localCamTrack]=await AgoraRTC.createMicrophoneAndCameraTracks(
+      {encoderConfig:"speech_low_quality"},
+      {encoderConfig:{width:1920,height:1080,frameRate:30,bitrateMin:800,bitrateMax:4500}}
+    );
+    $("localVideoWrap").classList.remove("hidden");localCamTrack.play("localVideo");
+  }
+  await agoraClient.publish(mode==="audio"?[localMicTrack]:[localMicTrack,localCamTrack]);
+}
+let cameraPreviewStream=null,cameraPreviewFacing="user",cameraPreviewMuted=false,cameraPreviewLightOn=false,pendingVideoCall=null;
+function closeCameraPreview(){
+  if(cameraPreviewStream){cameraPreviewStream.getTracks().forEach(t=>t.stop());cameraPreviewStream=null}
+  $("cameraPreviewVideo")?.pause();$("cameraPreviewVideo")?.removeAttribute("srcObject");$("cameraPreviewModal")?.classList.add("hidden");pendingVideoCall=null;
+}
+async function openCameraPreview(){
+  const modal=$("cameraPreviewModal"),video=$("cameraPreviewVideo"); if(!modal||!video)return false;
+  try{
+    cameraPreviewFacing="user"; cameraPreviewMuted=false; cameraPreviewLightOn=false;
+    cameraPreviewStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"user"},width:{ideal:1920},height:{ideal:1080}},audio:true});
+    video.srcObject=cameraPreviewStream; await video.play().catch(()=>{});
+    $("previewMuteBtn")?.classList.add("active"); $("previewMuteBtn")?.classList.remove("muted");
+    $("cameraPreviewLight")?.classList.add("hidden"); $("cameraPreviewStatus").innerHTML='<i class="fa-solid fa-circle"></i> Camera ready';
+    modal.classList.remove("hidden"); return true;
+  }catch(e){console.error(e);toast("Camera permission is required for video call");return false}
+}
+async function flipPreviewCamera(){
+  if(!cameraPreviewStream)return;
+  const wasMuted=cameraPreviewMuted;
+  cameraPreviewStream.getTracks().forEach(t=>t.stop());
+  cameraPreviewFacing=cameraPreviewFacing==="user"?"environment":"user";
+  try{cameraPreviewStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:cameraPreviewFacing},width:{ideal:1920},height:{ideal:1080}},audio:true});
+    cameraPreviewStream.getAudioTracks().forEach(t=>t.enabled=!wasMuted);$("cameraPreviewVideo").srcObject=cameraPreviewStream;await $("cameraPreviewVideo").play().catch(()=>{});$("cameraPreviewVideo").style.transform=cameraPreviewFacing==="user"?"scaleX(-1)":"scaleX(1)";}catch(e){toast("Unable to switch camera")}
+}
+function togglePreviewMute(){cameraPreviewMuted=!cameraPreviewMuted;cameraPreviewStream?.getAudioTracks().forEach(t=>t.enabled=!cameraPreviewMuted);const b=$("previewMuteBtn");b?.classList.toggle("active",!cameraPreviewMuted);b?.classList.toggle("muted",cameraPreviewMuted);if(b)b.innerHTML=cameraPreviewMuted?'<i class="fa-solid fa-microphone-slash"></i><span>Muted</span>':'<i class="fa-solid fa-microphone"></i><span>Mic</span>'}
+function togglePreviewLight(){cameraPreviewLightOn=!cameraPreviewLightOn;$("cameraPreviewLight")?.classList.toggle("hidden",!cameraPreviewLightOn);$("previewLightBtn")?.classList.toggle("active",cameraPreviewLightOn)}
+
+async function launchCall(mode){
+  if(!me||!activeFriend)return;
+  if(!activeFriend.isGroup&&!isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ করতে হবে");
+  const channel=callChannel(activeFriend.isGroup?activeFriend.uid:pair(me.uid,activeFriend.uid));
+  const callId=CALLS().doc().id;
+  const participants=activeFriend.isGroup?(activeFriend.memberUids||[]).filter(x=>x!==me.uid):[activeFriend.uid];
+  const ref=CALLS().doc(callId);
+  const payload={callId,callerUid:me.uid,callerName:profile?.displayName||me.displayName||"User",callerPhoto:profile?.photoURL||me.photoURL||null,mode,channel,groupId:activeFriend.isGroup?activeFriend.uid:null,recipientUids:participants,recipientMap:Object.fromEntries(participants.map(x=>[String(x),true])),status:"ringing",createdAt:firebase.firestore.FieldValue.serverTimestamp()};
+  await ref.set(payload);
+  activeCall={callId,mode,channel,ref,caller:true,groupId:activeFriend.isGroup?activeFriend.uid:null};watchActiveCall();
+  $("callHeaderName").textContent=activeFriend.isGroup?`${activeFriend.name||"Group"} · Group call`:activeFriend.displayName||"Call";
+  $("callHeaderAvatar").src=avatar(activeFriend);callUi(true);updateCallParticipants();setCallStatus("Connecting…");
+  try{await setupAgora(mode,channel);setCallStatus("কলের উত্তর অপেক্ষা…")}catch(e){console.error(e);toast("কল শুরু করা যায়নি");await endCall(true)}
+
+}
+async function startCall(mode){
+  if(mode==="video"){
+    if(!me||!activeFriend)return;
+    if(!activeFriend.isGroup&&!isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ করতে হবে");
+    pendingVideoCall={mode};
+    $("cameraPreviewTargetName").textContent=activeFriend.isGroup?(activeFriend.name||"Group call"):(activeFriend.displayName||"Video call");
+    if(await openCameraPreview())return;
+    pendingVideoCall=null; return;
+  }
+  return launchCall(mode);
+}
+
+async function acceptCall(){
+  const c=incomingCall;if(!c)return;
+  if(activeCall){toast("আপনি ইতিমধ্যে একটি কলে আছেন");return;}
+  $("callInviteModal").classList.add("hidden");incomingCall=null;
+  activeCall={callId:c.callId,mode:c.mode,channel:c.channel,ref:CALLS().doc(c.callId),caller:false,groupId:c.groupId||null};watchActiveCall();
+  $("callHeaderName").textContent=c.groupId?(c.callerName+" · Group call"):c.callerName;$("callHeaderAvatar").src=c.callerPhoto||avatar(users.find(u=>u.uid===c.callerUid));callUi(true);updateCallParticipants();setCallStatus("Connecting…");
+  try{await setupAgora(c.mode,c.channel);setCallStatus(c.mode==="video"?"ভিডিও কল চলছে":"অডিও কল চলছে");startCallTimer(Date.now());await activeCall.ref.set({status:"accepted",acceptedBy:me.uid,acceptedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true})}
+  catch(e){console.error(e);toast("কল গ্রহণ করা যায়নি");await endCall(true)}
+}
+async function rejectIncomingCall(){const c=incomingCall;if(!c)return;$("callInviteModal").classList.add("hidden");incomingCall=null;try{await CALLS().doc(c.callId).set({status:"rejected",rejectedBy:me.uid,rejectedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true})}catch(_){}}
+async function endCall(silent=false){
+  const c=activeCall;activeCall=null;
+  if(callUnsub){try{callUnsub()}catch(_){} callUnsub=null;}
+  try{localMicTrack?.stop();localMicTrack?.close();localCamTrack?.stop();localCamTrack?.close()}catch(_){}
+  localMicTrack=localCamTrack=null;
+  try{if(agoraClient){await agoraClient.leave();agoraClient.removeAllListeners();}}catch(_){}
+  agoraClient=null;pinnedCallParticipant=null;mutedRemoteParticipants.clear();closeCallParticipants();cleanupCallUI();incomingCall=null;
+  if(c&&!silent)try{await c.ref.set({status:"ended",endedBy:me.uid,endedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true})}catch(_){}
+}
+
+let selectedPlaybackDevice="default";
+let playbackMode="speaker";
+async function listPlaybackDevices(){
+  try{
+    if(!window.AgoraRTC?.getPlaybackDevices)return [];
+    return await AgoraRTC.getPlaybackDevices();
+  }catch(e){console.warn("playback devices",e);return []}
+}
+async function applyPlaybackDevice(track){
+  if(!track)return;
+  try{
+    if(typeof track.setPlaybackDevice==="function" && selectedPlaybackDevice!=="default"){await track.setPlaybackDevice(selectedPlaybackDevice);return true}
+  }catch(e){console.warn("set playback device",e)}
+  return false
+}
+async function setPlaybackOutput(deviceId,mode="speaker"){
+  playbackMode=mode;selectedPlaybackDevice=deviceId||"default";
+  const tracks=[];remoteUsers.forEach(u=>{if(u.audioTrack)tracks.push(u.audioTrack)});
+  for(const track of tracks){try{await applyPlaybackDevice(track)}catch(_){}}
+  const btn=$("speakerCallBtn");
+  if(btn){btn.classList.add("active");btn.innerHTML=mode==="earpiece"?'<i class="fa-solid fa-mobile-screen-button"></i><span>Earpiece</span>':'<i class="fa-solid fa-volume-high"></i><span>Speaker</span>'}
+  $("audioOutputMenu")?.classList.add("hidden");
+  toast(mode==="earpiece"?"Earpiece selected":"Speaker selected");
+}
+async function openAudioOutputMenu(){
+  const menu=$("audioOutputMenu");if(!menu)return;
+  menu.classList.toggle("hidden");
+  if(menu.classList.contains("hidden"))return;
+  const list=$("audioOutputDevices");
+  list.innerHTML='<div class="audio-output-loading">অডিও ডিভাইস খোঁজা হচ্ছে…</div>';
+  const devices=await listPlaybackDevices();
+  list.innerHTML="";
+  const add=(label,icon,id,mode,disabled=false)=>{const b=document.createElement("button");b.className="audio-output-item"+(playbackMode===mode?" selected":"")+(disabled?" disabled":"");b.disabled=disabled;b.innerHTML=`<i class="fa-solid ${icon}"></i><span>${label}</span>${playbackMode===mode?'<i class="fa-solid fa-check check"></i>':''}`;b.onclick=()=>setPlaybackOutput(id,mode);list.appendChild(b)};
+  add("Speaker","fa-volume-high","default","speaker");
+  const receiver=devices.find(d=>/earpiece|receiver|handset|receiver|telephony/i.test(d.label||""));
+  if(receiver)add("Earpiece / Receiver","fa-mobile-screen-button",receiver.deviceId,"earpiece");
+  const extras=devices.filter(d=>d.deviceId!=="default" && (!receiver||d.deviceId!==receiver.deviceId));
+  extras.slice(0,6).forEach(d=>add(d.label||"Audio output","fa-headphones",d.deviceId,"speaker"));
+  if(!devices.length){const note=document.createElement("div");note.className="audio-output-note";note.textContent="এই ব্রাউজারে আলাদা output device শনাক্ত করা যায়নি। Speaker mode ব্যবহার করা হবে।";list.appendChild(note)}
+}
+
+async function toggleMute(){if(!localMicTrack)return;const muted=localMicTrack.muted;await localMicTrack.setMuted(!muted);$("muteCallBtn").classList.toggle("active",muted);$("muteCallBtn").innerHTML=muted?'<i class="fa-solid fa-microphone-slash"></i><span>Unmute</span>':'<i class="fa-solid fa-microphone"></i><span>Mute</span>'}
+async function toggleCamera(){if(!localCamTrack)return;const muted=localCamTrack.muted;await localCamTrack.setMuted(!muted);$("cameraCallBtn").classList.toggle("active",muted);$("cameraCallBtn").innerHTML=muted?'<i class="fa-solid fa-video-slash"></i><span>Camera off</span>':'<i class="fa-solid fa-video"></i><span>Camera</span>'}
+function watchCallInvites(){
+  if(!me)return;
+  if(callInviteUnsub)callInviteUnsub();
+  callInviteUnsub=CALLS().where("recipientUids","array-contains",me.uid).onSnapshot(s=>{
+    s.docChanges().filter(c=>c.type==="added"||c.type==="modified").forEach(ch=>{
+      const c={id:ch.doc.id,...ch.doc.data()};
+      if(c.callerUid===me.uid || c.status!=="ringing")return;
+      if(activeCall || incomingCall?.callId===c.callId)return;
+      incomingCall=c;$("incomingCallAvatar").src=c.callerPhoto||avatar(users.find(u=>u.uid===c.callerUid));$("incomingCallName").textContent=c.callerName||"Incoming call";$("incomingCallType").textContent=c.mode==="video"?"ভিডিও কল":"অডিও কল";$("callInviteModal").classList.remove("hidden");
+    });
+  },e=>console.warn("call invite listener",e));
+}
+function watchActiveCall(){
+  if(callUnsub)callUnsub();
+  if(!activeCall)return;
+  callUnsub=activeCall.ref.onSnapshot(s=>{
+    if(!s.exists)return;const c=s.data();
+    if(c.status==="accepted"&&!callStartedAt){setCallStatus(c.mode==="video"?"ভিডিও কল চলছে":"অডিও কল চলছে");startCallTimer(c.acceptedAt?.toMillis?.()||Date.now())}
+    if(c.kickedUids?.map(String).includes(String(me?.uid))){toast("আপনাকে group call থেকে remove করা হয়েছে");endCall(true);return;}
+    if(c.status==="ended"||c.status==="rejected")endCall(true);
+  });
+}
+
+const $=id=>document.getElementById(id),esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+const avatar=u=>u?.photoURL||"https://placehold.co/120x120/e5e7eb/64748b?text=U";
+const pair=(a,b)=>[a,b].sort().join("__");
+const time=v=>{let n=v?.toMillis?v.toMillis():Number(v||0);if(!n)return"now";let d=new Date(n),now=new Date();if(d.toDateString()===now.toDateString())return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});return d.toLocaleDateString([],{day:"2-digit",month:"short"});};
+const bytes=n=>{if(!n)return"0 B";const u=["B","KB","MB","GB"];let i=Math.floor(Math.log(n)/Math.log(1024));return`${(n/Math.pow(1024,i)).toFixed(i?1:0)} ${u[i]}`};
+function toast(t){const e=$("toast");e.textContent=t;e.classList.add("show");clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove("show"),2400)}
+function isFriend(uid){return friends.some(f=>f.friendUid===uid)}
+function closeAllModals(){document.querySelectorAll(".modal").forEach(x=>x.classList.add("hidden"))}
+
+// ===== SPA back navigation =====
+// Internal screens use a hash sub-link so browser Back stays inside the app
+// instead of leaving the GitHub Pages app.
+let routeSyncing=false;
+function viewRoute(id){return ({homeView:"home",peopleView:"people",groupsView:"groups",profileView:"profile",settingsView:"settings"})[id]||"home"}
+function routeView(route){return ({home:"homeView",people:"peopleView",groups:"groupsView",profile:"profileView",settings:"settingsView"})[route]||"homeView"}
+function currentRoute(){
+  const h=decodeURIComponent(String(location.hash||"").replace(/^#/,""));
+  if(h.startsWith("chat/"))return {type:"chat",id:h.slice(5)};
+  return {type:"view",name:h||"home"};
+}
+function pushAppRoute(route){
+  if(routeSyncing)return;
+  const target="#"+route;
+  if(location.hash===target)return;
+  history.pushState({fastMessenger:true,route},"",target);
+}
+function showView(id,withHistory=true){
+  if(!$(id))return;
+  if(withHistory)pushAppRoute(viewRoute(id));
+  document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));$(id).classList.add("active");document.querySelectorAll(".nav-item").forEach(x=>x.classList.toggle("active",x.dataset.view===id));
+}
+function applyAppRoute(){
+  routeSyncing=true;
+  const r=currentRoute();
+  if(r.type==="chat"){
+    // Chat is opened by the normal app action; Back simply returns to the
+    // previous internal screen without navigating away from the app.
+    if(!activeFriend){
+      const prior=history.state?.fastMessenger ? history.state.route : "home";
+      showView(routeView(prior),false);
+    }
+  }else{
+    if(activeFriend)closeChat();
+    showView(routeView(r.name),false);
+  }
+  routeSyncing=false;
+}
+function initAppHistory(){
+  const r=currentRoute();
+  if(!location.hash){
+    history.replaceState({fastMessenger:true,route:"home"},"", "#home");
+    // Sentinel entry: pressing Back from the app's first screen remains in-app.
+    history.pushState({fastMessenger:true,route:"home",sentinel:true},"", "#home");
+  }else if(!history.state?.fastMessenger){
+    history.replaceState({fastMessenger:true,route:r.name||"home"},"",location.href);
+    history.pushState({fastMessenger:true,route:r.name||"home",sentinel:true},"",location.href);
+  }
+  applyAppRoute();
+}
+window.addEventListener("popstate",()=>{
+  // Keep the app on an internal sub-link when Back reaches its first route.
+  if(location.hash){
+    if(history.state?.fastMessenger && history.state?.route==="home" && !history.state?.sentinel){
+      history.pushState({fastMessenger:true,route:"home",sentinel:true},"", "#home");
+    }
+    applyAppRoute();
+    return;
+  }
+  // If browser Back reaches the page without an app hash, restore the app route.
+  history.pushState({fastMessenger:true,route:"home",sentinel:true},"", "#home");
+  applyAppRoute();
+});
+function syncProfile(){if(!profile)return;try{saveLocal("profile",profile)}catch(_){}const name=profile.displayName||me.displayName||me.email?.split("@")[0]||"User";$("headerAvatar").src=avatar(profile);$("profileAvatar").src=avatar(profile);$("profileName").textContent=name;$("profileEmail").textContent=profile.email||me.email||"";$("profileBio").textContent=profile.bio||"No bio added.";$("editName").value=name;$("editPhoto").value=profile.photoURL||"";$("editBio").value=profile.bio||""}
+async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();const base={uid:me.uid,displayName:me.displayName||me.email?.split("@")[0]||"User",email:me.email||"",photoURL:me.photoURL||null,lastSeen:firebase.firestore.FieldValue.serverTimestamp(),online:true};if(!snap.exists)await ref.set(base);else await ref.set({lastSeen:base.lastSeen,online:true},{merge:true});profile={...base,...(snap.exists?snap.data():{})};
+  const googleName=me.displayName||profile.displayName||base.displayName;
+  const googlePhoto=me.photoURL||profile.photoURL||null;
+  const googleEmail=me.email||profile.email||"";
+  profile={...profile,displayName:googleName,photoURL:googlePhoto,email:googleEmail};
+  await ref.set({displayName:googleName,photoURL:googlePhoto,email:googleEmail},{merge:true});
+  syncProfile();syncMenu()
+}
+function heartbeat(){if(!me)return;const ping=()=>USERS().doc(me.uid).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{});ping();clearInterval(heartbeat.t);heartbeat.t=setInterval(ping,30000)}
+window.addEventListener("beforeunload",()=>{if(me)USERS().doc(me.uid).set({online:false,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{})});
+function stopListeners(){listUnsubs.forEach(u=>u&&u());listUnsubs=[];closeChat()}
+function startListeners(){
+  stopListeners();
+  listUnsubs.push(USERS().onSnapshot(s=>{users=s.docs.map(d=>({uid:d.id,...d.data()})).filter(x=>x.uid!==me.uid);saveLocal("users",users);renderPeople();renderGroups();renderChats()}));
+  listUnsubs.push(FRIENDS().where("ownerUid","==",me.uid).onSnapshot(s=>{friends=s.docs.map(d=>({id:d.id,...d.data()}));saveLocal("friends",friends);renderPeople();renderGroups();renderChats();updateStats()}));
+  listUnsubs.push(REQUESTS().where("receiverUid","==",me.uid).onSnapshot(s=>{requests=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.status==="pending");saveLocal("requests",requests);updateRequestBadge();renderPeople()}));
+  listUnsubs.push(REQUESTS().where("senderUid","==",me.uid).onSnapshot(s=>{sentRequests=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.status==="pending");saveLocal("sentRequests",sentRequests);renderPeople()}));
+  listUnsubs.push(GROUPS().where("memberUids","array-contains",me.uid).onSnapshot(s=>{groups=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0));saveLocal("groups",groups);renderGroups();renderChats()}));
+  const mergeMessages=s=>{s.docChanges().forEach(ch=>{if(ch.type==="removed")messageMap.delete(ch.doc.id);else messageMap.set(ch.doc.id,{id:ch.doc.id,...ch.doc.data()})});cacheMessages();renderChats();updateStats();if(activeFriend)renderMessages()};
+  listUnsubs.push(MESSAGES().where("senderUid","==",me.uid).onSnapshot(mergeMessages));
+  listUnsubs.push(MESSAGES().where("receiverUid","==",me.uid).onSnapshot(mergeMessages));
+  listUnsubs.push(MESSAGES().where("groupMemberUids","array-contains",me.uid).onSnapshot(mergeMessages,()=>{}));
+}
+function cacheKey(name){return CACHE_PREFIX+name+(me?"_"+me.uid:"")}
+function saveLocal(name,value){try{localStorage.setItem(cacheKey(name),JSON.stringify(value))}catch(_){}}
+function loadLocal(name,fallback){try{const raw=localStorage.getItem(cacheKey(name));return raw?JSON.parse(raw):fallback}catch(_){return fallback}}
+function hydrateLocalCache(){
+  if(!me)return;
+  const u=loadLocal("users",[]),f=loadLocal("friends",[]),r=loadLocal("requests",[]),sr=loadLocal("sentRequests",[]),g=loadLocal("groups",[]),m=loadLocal("messages",[]);
+  if(Array.isArray(u))users=u; if(Array.isArray(f))friends=f; if(Array.isArray(r))requests=r; if(Array.isArray(sr))sentRequests=sr; if(Array.isArray(g))groups=g;
+  messageMap=new Map((Array.isArray(m)?m:[]).map(x=>[x.id,x]));
+  renderPeople();renderGroups();renderChats();updateStats();
+}
+function cacheMessages(){saveLocal("messages",[...messageMap.values()].slice(-800))}
+function renderChats(){
+  if(!me)return;
+  const q=($("chatSearch")?.value||"").trim().toLowerCase();
+  const all=[...messageMap.values()].sort((a,b)=>(b.createdAt?.toMillis?.()||Number(b.createdAt)||0)-(a.createdAt?.toMillis?.()||Number(a.createdAt)||0));
+  const by=new Map();
+  for(const m of all){
+    if(m.groupId)continue;
+    const uid=m.senderUid===me.uid?m.receiverUid:m.senderUid;
+    if(uid&&!by.has(uid))by.set(uid,m);
+  }
+  // Show every accepted friend in the Home chat list, even before the first message.
+  friends.forEach(f=>{if(f.friendUid&&!by.has(f.friendUid))by.set(f.friendUid,null)});
+  let rows=[...by.entries()].map(([uid,m])=>({uid,m,u:users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid)||{uid,displayName:"User"}}));
+  if(q)rows=rows.filter(r=>(r.u.displayName||"").toLowerCase().includes(q)||(r.u.email||"").toLowerCase().includes(q)||(r.m?.text||"").toLowerCase().includes(q));
+  const box=$("chatList");
+  const groupRows=groups.filter(g=>!q||(g.name||"").toLowerCase().includes(q)).map(g=>{
+    const m=[...messageMap.values()].filter(x=>x.groupId===g.id).sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0))[0];
+    const preview=m?.text||((m?.imageUrls||[]).length?"📷 ছবি":m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
+    return `<button class="chat-item" onclick="openGroupChat('${esc(g.id)}')"><span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${esc(preview)}</small></span><time class="item-meta">${m?time(m.createdAt):"Group"}</time></button>`;
+  }).join("");
+  const personal=rows.map(r=>{
+    const preview=r.m?.text||((r.m?.imageUrls||[]).length?"📷 Image":r.m?.fileName?"📎 "+r.m.fileName:"Start a conversation");
+    return `<button class="chat-item" onclick="openChat('${esc(r.uid)}')"><img class="avatar" src="${esc(avatar(r.u))}"><span class="item-copy"><strong>${esc(r.u.displayName||r.u.email||"User")}</strong><small>${esc(preview)}</small></span><time class="item-meta">${r.m?time(r.m.createdAt):"Friend"}</time></button>`;
+  }).join("");
+  box.innerHTML=groupRows+personal||`<div class="empty"><i class="fa-regular fa-comments" style="font-size:28px;display:block;margin-bottom:10px"></i>কোনো conversation নেই। People থেকে একজনকে বেছে নিয়ে chat শুরু করুন।</div>`;
+}
+function renderGroups(){const box=$("groupList");if(!box)return;const q=($("groupSearch")?.value||"").trim().toLowerCase();const rows=groups.filter(g=>!q||(g.name||"").toLowerCase().includes(q));box.innerHTML=rows.length?rows.map(g=>{const ms=groupMemberUsers(g).slice(0,4);return`<button class="chat-item" onclick="openGroupChat('${esc(g.id)}')"><span class="group-avatar-mini">${ms.map(u=>`<img src="${esc(avatar(u))}" alt="">`).join("")}</span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${(g.memberUids||[]).length} জন সদস্য · ${esc((g.memberUids||[]).includes(me.uid)?"আপনি সদস্য":"")}</small></span><span class="item-meta"><i class="fa-solid fa-chevron-right"></i></span></button>`}).join(""):`<div class="empty"><i class="fa-solid fa-user-group" style="font-size:28px;display:block;margin-bottom:10px"></i>এখনও কোনো গ্রুপ নেই।<br>নতুন গ্রুপ তৈরি করে আপনার বন্ধুদের যোগ করুন।</div>`}
+function renderGroupPicker(){const box=$("groupFriendPicker"),count=$("groupMemberCount");if(!box)return;const fs=friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User",email:""});if(!fs.length){box.innerHTML='<div class="empty" style="padding:25px 10px;background:transparent;border:0">আগে অন্তত একজন বন্ধুকে Add করুন, তারপর গ্রুপ তৈরি করতে পারবেন।</div>';$("saveGroupBtn").disabled=true;return}box.innerHTML=fs.map(u=>`<label class="group-friend-row"><input type="checkbox" value="${esc(u.uid)}"><img src="${esc(avatar(u))}" alt=""><span class="item-copy"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></span></label>`).join("");const update=()=>{const n=box.querySelectorAll("input:checked").length;count.textContent=`${n} জন নির্বাচিত`;$("saveGroupBtn").disabled=n<1};box.querySelectorAll("input").forEach(x=>x.onchange=update);update()}
+function showGroupModal(){if(!me)return;$("groupNameInput").value="";$("groupModal").classList.remove("hidden");renderGroupPicker();setTimeout(()=>$("groupNameInput").focus(),50)}
+async function createGroup(){const name=$("groupNameInput").value.trim();const selected=[...document.querySelectorAll("#groupFriendPicker input:checked")].map(x=>x.value);if(!name)return toast("গ্রুপের নাম দিন");if(!selected.length)return toast("অন্তত একজন বন্ধুকে নির্বাচন করুন");if(!selected.every(isFriend))return toast("শুধু আপনার বন্ধুদেরই গ্রুপে যোগ করা যাবে");const btn=$("saveGroupBtn");btn.disabled=true;try{const memberUids=[me.uid,...selected.filter(x=>x!==me.uid)];const ref=GROUPS().doc();await ref.set({name,ownerUid:me.uid,memberUids,createdAt:firebase.firestore.FieldValue.serverTimestamp()});$("groupModal").classList.add("hidden");toast("গ্রুপ তৈরি হয়েছে");showView("groupsView");}catch(e){console.error("createGroup",e);toast(e?.code==="permission-denied"?"গ্রুপ তৈরি করার permission নেই। Firestore rules পরীক্ষা করুন":"গ্রুপ তৈরি করা যায়নি")}finally{btn.disabled=false}}
+function renderPeople(){const q=($("peopleSearch")?.value||"").trim().toLowerCase();let rows=peopleTab==="friends"?friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User"}):peopleTab==="requests"?requests.map(r=>users.find(u=>u.uid===r.senderUid)||{uid:r.senderUid,displayName:"User"}):users;if(q)rows=rows.filter(u=>(u.displayName||"").toLowerCase().includes(q)||(u.email||"").toLowerCase().includes(q));const box=$("peopleList");box.innerHTML=rows.length?rows.map(u=>{const pending=requests.find(r=>r.senderUid===u.uid),sent=sentRequests.find(r=>r.receiverUid===u.uid),f=isFriend(u.uid);let actions=f?`<button class="small-btn primary" onclick="openChat('${u.uid}')">Message</button>`:(pending||sent)?`<button class="small-btn" disabled>Pending</button>`:`<button class="small-btn primary" onclick="sendRequest('${u.uid}')">Add friend</button>`;if(peopleTab==="requests"&&pending)actions=`<button class="small-btn primary" onclick="acceptRequest('${pending.id}','${u.uid}')">Accept</button><button class="small-btn danger" onclick="rejectRequest('${pending.id}')">Decline</button>`;return`<div class="person-item"><img class="avatar" src="${esc(avatar(u))}"><div class="item-copy" onclick="openUser('${u.uid}')"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></div><div class="person-actions">${actions}</div></div>`}).join(""):`<div class="empty">কোনো user পাওয়া যায়নি।</div>`}
+async function sendRequest(uid){
+  if(!me||!uid||uid===me.uid)return;
+  if(isFriend(uid))return toast("আপনারা ইতিমধ্যে বন্ধু");
+  const ref=REQUESTS().doc(pair(me.uid,uid));
+  try{
+    const snap=await ref.get();
+    if(snap.exists){
+      const r=snap.data()||{};
+      if(r.status==="pending"){
+        if(r.senderUid===me.uid)return toast("Friend request already sent");
+        if(r.receiverUid===me.uid)return toast("আপনার কাছে এই বন্ধুত্বের request এসেছে");
+      }
+      if(r.status==="accepted")return toast("আপনারা ইতিমধ্যে বন্ধু");
+      if(r.status!=="rejected")return toast("এই request এখন পরিবর্তন করা যাচ্ছে না");
+      if(r.senderUid!==me.uid)return toast("এই request পুনরায় পাঠানোর অনুমতি নেই");
+      await ref.update({status:"pending",respondedAt:firebase.firestore.FieldValue.delete(),createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    }else{
+      await ref.set({senderUid:me.uid,receiverUid:uid,pairId:pair(me.uid,uid),status:"pending",createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    }
+    toast("Friend request sent");
+    renderPeople();
+  }catch(e){
+    console.error("sendRequest",e);
+    toast(e?.code==="permission-denied"?"Friend request পাঠানোর permission নেই। Firestore rules পরীক্ষা করুন":"Friend request পাঠানো যায়নি");
+  }
+}
+async function acceptRequest(id,uid){
+  if(!me||!id||!uid)return toast("Request পাওয়া যায়নি");
+  const reqRef=REQUESTS().doc(id);
+  try{
+    const reqSnap=await reqRef.get();
+    if(!reqSnap.exists)throw new Error("REQUEST_NOT_FOUND");
+    const req=reqSnap.data()||{};
+    if(req.receiverUid!==me.uid||req.senderUid!==uid)throw new Error("REQUEST_INVALID");
+    if(req.status!=="pending")throw new Error("REQUEST_ALREADY_HANDLED");
+    const now=firebase.firestore.Timestamp.now();
+    const p=pair(me.uid,uid);
+    const batch=db.batch();
+    batch.set(FRIENDS().doc(p+"__"+me.uid),{pairId:p,ownerUid:me.uid,friendUid:uid,requestId:id,createdAt:now},{merge:true});
+    batch.set(FRIENDS().doc(p+"__"+uid),{pairId:p,ownerUid:uid,friendUid:me.uid,requestId:id,createdAt:now},{merge:true});
+    batch.set(reqRef,{status:"accepted",respondedAt:now},{merge:true});
+    await batch.commit();
+    toast("Friend added");
+    peopleTab="friends";
+    document.querySelectorAll("[data-people-tab]").forEach(x=>x.classList.toggle("active",x.dataset.peopleTab==="friends"));
+    renderPeople();
+  }catch(e){
+    console.error("acceptRequest",e);
+    const msg=e?.code==="permission-denied"?"Friend accept করার permission নেই। Firestore rules পরীক্ষা করুন":e?.message==="REQUEST_NOT_FOUND"?"Request আর পাওয়া যাচ্ছে না":e?.message==="REQUEST_INVALID"?"এই request আপনার জন্য নয়":e?.message==="REQUEST_ALREADY_HANDLED"?"এই request আগে থেকেই সম্পন্ন হয়েছে":"Friend request accept করা যায়নি";
+    toast(msg);
+  }
+}
+async function rejectRequest(id){try{const ref=REQUESTS().doc(id),snap=await ref.get();if(!snap.exists||snap.data()?.receiverUid!==me.uid)return toast("Request পাওয়া যায়নি");await ref.set({status:"rejected",respondedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});toast("Request declined")}catch(e){console.error(e);toast("কাজটি করা যায়নি")}}
+function updateRequestBadge(){const n=requests.length;["requestBadge","navPeopleBadge"].forEach(id=>{const e=$(id);e.textContent=n;e.classList.toggle("hidden",!n)})}
+function updateStats(){if(!me)return;const msgs=[...messageMap.values()];$("statChats").textContent=new Set(msgs.filter(m=>!m.groupId).map(m=>m.senderUid===me.uid?m.receiverUid:m.senderUid)).size;$("statFriends").textContent=friends.length;$("statSent").textContent=msgs.filter(m=>m.senderUid===me.uid).length}
+function setChatHeader(u){
+  const isGroup=!!u?.isGroup;
+  const name=isGroup?(u.name||"Group"):((u.displayName||u.email||"User"));
+  const photo=isGroup?"https://placehold.co/120x120/2563eb/ffffff?text=G":avatar(u);
+  $("chatAvatar").src=photo;
+  $("chatName").textContent=name;
+  $("chatStatus").textContent=isGroup?`${(u.memberUids||[]).length} জন সদস্য`:((u.online)?"online":"offline");
+  $("chatPresence").classList.toggle("online",!isGroup&&!!u.online);
+}
+
+window.openUser=uid=>{const u=users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid);if(!u)return;$("userModalAvatar").src=avatar(u);$("userModalName").textContent=u.displayName||"User";$("userModalEmail").textContent=u.email||"";$("userModalBio").textContent=u.bio||"No bio added.";$("userModalChat").onclick=()=>{closeAllModals();openChat(uid)};$("userModal").classList.remove("hidden")};
+
+function subscribeChat(uid){chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];const ref=MESSAGES();if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(renderMessages));}else{chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(renderMessages));chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(renderMessages));}}
+function messageHTML(m){
+  const mine=m.senderUid===me?.uid;
+  const imgs=Array.isArray(m.imageUrls)?m.imageUrls:[];
+  const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
+  const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
+  const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
+  const senderName=users.find(u=>String(u.uid)===String(m.senderUid))?.displayName||"Member";
+  const delBtn=`<button class="msg-delete-btn" type="button" title="Delete message" onclick="deleteMessage('${esc(m.id||'')}')"><i class="fa-solid fa-trash-can"></i></button>`;
+  return `<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">
+    ${activeFriend?.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(senderName)}</div>`:""}
+    ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
+    ${imgs.map(u=>`<img class="msg-img" src="${esc(u)}" onclick="showImage('${esc(u)}')">`).join("")}
+    ${uniqueFiles.map(f=>`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
+    <div class="msg-footer"><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div>${delBtn}</div>
+  </div></div>`;
+}
+async function deleteMessage(id){
+  if(!me||!id)return;
+  const m=activeMessageMap.get(id)||messageMap.get(id);
+  if(!m)return toast("Message পাওয়া যায়নি");
+  if(m.senderUid!==me.uid&&m.receiverUid!==me.uid)return toast("এই message delete করার অনুমতি নেই");
+  if(!confirm("এই message টি delete করবেন?"))return;
+  try{
+    await MESSAGES().doc(id).delete();
+    activeMessageMap.delete(id);messageMap.delete(id);cacheMessages();renderMessages();
+    toast("Message deleted");
+  }catch(e){
+    console.error("deleteMessage",e);
+    toast(e?.code==="permission-denied"?"Message delete করার permission নেই। Firestore Rules পরীক্ষা করুন":"Message delete করা যায়নি");
+  }
+}
+function renderMessages(){
+  if(!activeFriend)return;
+  const arr=[...activeMessageMap.values()].sort((x,y)=>(x.createdAt?.toMillis?.()||Number(x.createdAt)||0)-(y.createdAt?.toMillis?.()||Number(y.createdAt)||0));
+  const box=$("messages");
+  const escUrl=u=>esc(u||"");
+  box.innerHTML=arr.length?arr.map(m=>{
+    const mine=m.senderUid===me.uid,imgs=m.imageUrls||[];
+    const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
+    const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
+    const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
+    return`<div class="msg-row ${mine?"mine":"theirs"}"><div class="bubble">
+      ${activeFriend.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(users.find(u=>u.uid===m.senderUid)?.displayName||"Member")}</div>`:""}
+      ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
+      ${imgs.map(u=>`<img class="msg-img" src="${escUrl(u)}" onclick="showImage('${escUrl(u)}')">`).join("")}
+      ${uniqueFiles.map(f=>`<a class="file-card" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
+      <div class="msg-time">${time(m.createdAt)}</div>
+    </div></div>`;
+  }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
+  box.scrollTop=box.scrollHeight;
+}
+function subscribeChat(uid){
+  chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];
+  activeMessageMap=new Map([...messageMap.values()].filter(m=>activeFriend?.isGroup?m.groupId===uid:((m.senderUid===me.uid&&m.receiverUid===uid)||(m.senderUid===uid&&m.receiverUid===me.uid))).map(m=>[m.id,m]));
+  renderMessages();
+  const ref=MESSAGES();
+  const mergeSnap=s=>{s.docs.forEach(d=>activeMessageMap.set(d.id,{id:d.id,...d.data()}));renderMessages();};
+  if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(mergeSnap));}
+  else{
+    chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(mergeSnap));
+    chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(mergeSnap));
+  }
+}
+async function openChat(uid){
+  if(!me||!uid)return;
+  let u=users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid);
+  if(!u){
+    const cached=[...messageMap.values()].find(m=>m.senderUid===uid||m.receiverUid===uid);
+    u={uid,displayName:cached?.senderUid===uid?cached.senderName:cached?.receiverName||"User",email:"",photoURL:null,online:false};
+  }
+  currentConversationId=pair(me.uid,uid);
+  try{await idbOpen()}catch(e){console.warn("local message store unavailable",e)}
+  activeFriend=u;
+  setChatHeader(u);
+  if(!routeSyncing)pushAppRoute("chat/"+encodeURIComponent(uid));
+  $("chatPanel").classList.remove("hidden");
+  document.body.style.overflow="hidden";
+  subscribeChat(uid);
+  watchTyping();
+  renderMessages();
+}
+async function openGroupChat(groupId){
+  currentConversationId=groupId;
+  const g=groups.find(x=>x.id===groupId);if(!g)return toast("গ্রুপ পাওয়া যায়নি");
+  if(!(g.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
+  await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};setChatHeader(activeFriend);if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();await renderMessages()
+}
+function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];renderUploadQueue();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
+function watchTyping(){if(typingUnsub)typingUnsub();if(!activeFriend||activeFriend.isGroup){$("typing").classList.add("hidden");return}typingUnsub=USERS().doc(activeFriend.uid).onSnapshot(s=>{$("typing").classList.toggle("hidden",(s.data()||{}).typingTo!==me.uid)})}
+
+async function uploadImage(file,onProgress){if(file.size>32*1024*1024)throw new Error("Image 32MB-এর বেশি হতে পারবে না");const fd=new FormData();fd.append("image",file);const r=await fetch(`https://api.imgbb.com/1/upload?key=${IMAGE_UPLOAD_KEY}`,{method:"POST",body:fd});const j=await r.json();if(!j.success)throw new Error("ছবি আপলোড করা যায়নি");if(onProgress)onProgress(100);return j.data.url}
+
+async function uploadFile(file,onProgress){
+  const fd=new FormData();fd.append("file",file);
+  const r=await fetch(FILE_UPLOAD_ENDPOINT,{method:"POST",body:fd});
+  const j=await r.json().catch(()=>null);
+  if(!r.ok||!j||j.status!=="ok")throw new Error(j?.status||"ফাইল আপলোড করা যায়নি");
+  if(onProgress)onProgress(100);
+  return j.data;
+}
+
+function renderUploadQueue(){
+  const box=$("uploadQueue");
+  const items=[
+    ...attachedImages.map((f,i)=>({f,type:"image",i})),
+    ...attachedFiles.map((f,i)=>({f,type:"file",i}))
+  ];
+  box.classList.toggle("hidden",!items.length);
+  box.innerHTML=items.map(x=>`<div class="queue-chip">
+    <span class="queue-thumb">${x.type==="image"
+      ?`<img src="${URL.createObjectURL(x.f)}" style="width:34px;height:34px;border-radius:7px;object-fit:cover">`
+      :`<i class="fa-solid fa-file-arrow-up"></i>`}</span>
+    <span class="queue-copy"><b>${esc(x.f.name)}</b><small>${bytes(x.f.size)}</small><span class="progress"><i></i></span></span>
+  </div>`).join("");
+}
+async function sendMessage(e){
+  e.preventDefault();if(!activeFriend||!me)return;
+  const input=$("messageInput"),text=input.value.trim();
+  if(!text&&!attachedImages.length&&!attachedFiles.length)return;
+  if(!activeFriend.isGroup && !isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ হতে হবে, তারপর message পাঠাতে পারবেন");
+  if(activeFriend.isGroup && !(activeFriend.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
+  const btn=document.querySelector(".send-btn");btn.disabled=true;
+  try{
+    const imageUrls=[];
+    for(const f of attachedImages){
+      toast("ছবি আপলোড হচ্ছে…");
+      imageUrls.push(await uploadImage(f));
+    }
+    const fileDatas=[];
+    for(const f of attachedFiles){
+      toast("ফাইল আপলোড হচ্ছে…");
+      fileDatas.push(await uploadFile(f));
+    }
+    const firstFile=fileDatas[0]||null;
+    const payload={senderUid:me.uid,text,imageUrls,imageUrl:imageUrls[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
+    if(activeFriend.isGroup){payload.groupId=activeFriend.uid;payload.groupMemberUids=activeFriend.memberUids||[];payload.groupMemberMap=Object.fromEntries((activeFriend.memberUids||[]).map(x=>[String(x),true]));}else payload.receiverUid=activeFriend.uid;
+    await MESSAGES().add(payload);
+    input.value="";input.style.height="auto";
+    attachedImages=[];attachedFiles=[];
+    renderUploadQueue();toast("Message sent");
+  }catch(err){
+    console.error(err);
+    toast(err.message==="Failed to fetch"?"Upload service blocked or offline":(err.message||"Message পাঠানো যায়নি"));
+  }finally{btn.disabled=false;input.focus()}
+}
+function handleTyping(){if(!activeFriend||activeFriend.isGroup)return;clearTimeout(typingTimer);USERS().doc(me.uid).set({typingTo:activeFriend.uid,typingAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{});typingTimer=setTimeout(()=>USERS().doc(me.uid).set({typingTo:null},{merge:true}).catch(()=>{}),1200)}
+async function saveProfile(){const name=$("editName").value.trim();if(!name)return;try{const photo=$("editPhoto").value.trim()||null,bio=$("editBio").value.trim();await USERS().doc(me.uid).set({displayName:name,photoURL:photo,bio,profileUpdatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});profile={...profile,displayName:name,photoURL:photo,bio};syncProfile();closeAllModals();toast("Profile updated")}catch(e){toast("Profile save হয়নি")}}
+
+
+
+// ===== v4 Offline-first data layer =====
+const FM_DB_NAME="fast-messenger-local";
+const FM_DB_VERSION=1;
+const FM_STORES={messages:"messages",meta:"meta"};
+let fmDB=null;
+let currentConversationId=null;
+let messagePageSize=25;
+let oldestLoadedCreatedAt=0;
+let syncInProgress=false;
+
+function idbOpen(){
+  return new Promise((resolve,reject)=>{
+    if(fmDB)return resolve(fmDB);
+    const req=indexedDB.open(FM_DB_NAME,FM_DB_VERSION);
+    req.onupgradeneeded=e=>{
+      const db=e.target.result;
+      const ms=db.createObjectStore(FM_STORES.messages,{keyPath:"id"});
+      ms.createIndex("conversationCreatedAt",["conversationId","createdAtMs"],{unique:false});
+      db.createObjectStore(FM_STORES.meta,{keyPath:"key"});
+    };
+    req.onsuccess=()=>{fmDB=req.result;resolve(fmDB)};
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function idbPut(store,value){
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(store,"readwrite");tx.objectStore(store).put(value);
+    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });
+}
+async function idbGet(store,key){
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(store,"readonly"),r=tx.objectStore(store).get(key);
+    r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);
+  });
+}
+async function idbMessages(conversationId,limit=25,beforeMs=Infinity){
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(FM_STORES.messages,"readonly");
+    const idx=tx.objectStore(FM_STORES.messages).index("conversationCreatedAt");
+    const range=IDBKeyRange.bound([conversationId,0],[conversationId,beforeMs]);
+    const req=idx.openCursor(range,"prev"),out=[];
+    req.onsuccess=e=>{
+      const c=e.target.result;
+      if(!c||out.length>=limit){resolve(out.reverse());return}
+      out.push(c.value);c.continue();
+    };
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function idbPutMessages(items){
+  if(!items?.length)return;
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(FM_STORES.messages,"readwrite"),st=tx.objectStore(FM_STORES.messages);
+    items.forEach(m=>st.put(normalizeLocalMessage(m)));
+    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });
+}
+async function idbSetMeta(key,value){return idbPut(FM_STORES.meta,{key,value})}
+async function idbGetMeta(key){const x=await idbGet(FM_STORES.meta,key);return x?.value}
+function normalizeLocalMessage(m){
+  return {...m,
+    createdAtMs:m.createdAtMs || (m.createdAt?.toMillis?m.createdAt.toMillis():Date.now()),
+    conversationId:m.conversationId || pair(m.senderUid,m.receiverUid)
+  };
+}
+async function cacheSnapshotMessages(snapshot){
+  const items=snapshot.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()}));
+  await idbPutMessages(items);
+  return items;
+}
+async function renderLocalMessages(conversationId,limit=25,beforeMs=Infinity){
+  const local=await idbMessages(conversationId,limit,beforeMs);
+  if(conversationId!==currentConversationId)return local;
+  oldestLoadedCreatedAt=local.length?local[0].createdAtMs:0;
+  renderMessagesFromPlain(local);
+  return local;
+}
+function renderMessagesFromPlain(items){
+  const box=$("messages");if(!box)return;
+  if(!items.length){
+    box.innerHTML='<div class="empty-state"><i class="fa-regular fa-comments"></i><b>No messages yet</b><span>Start the conversation.</span></div>';
+    return;
+  }
+  box.innerHTML=items.map(m=>messageHTML(m)).join("");
+  box.scrollTop=box.scrollHeight;
+}
+async function loadOlderLocalMessages(){
+  if(!currentConversationId||!oldestLoadedCreatedAt)return;
+  const older=await idbMessages(currentConversationId,messagePageSize,oldestLoadedCreatedAt-1);
+  if(!older.length){toast("No more local messages");return}
+  const box=$("messages"),oldHeight=box.scrollHeight,oldTop=box.scrollTop;
+  box.insertAdjacentHTML("afterbegin",older.map(m=>messageHTML(m)).join(""));
+  oldestLoadedCreatedAt=older[0].createdAtMs;
+  box.scrollTop=box.scrollHeight-oldHeight+oldTop;
+}
+async function deltaSync(){
+  if(!me||!navigator.onLine||syncInProgress)return;
+  syncInProgress=true;setSyncUI(true,"Syncing changes…");
+  try{
+    const last=Number(await idbGetMeta("lastSync_"+me.uid)||0);
+    const cursor=firebase.firestore.Timestamp.fromMillis(last);
+    const [s1,s2]=await Promise.all([
+      MESSAGES().where("senderUid","==",me.uid).where("createdAt",">",cursor).get(),
+      MESSAGES().where("receiverUid","==",me.uid).where("createdAt",">",cursor).get()
+    ]);
+    const map=new Map();
+    s1.docs.forEach(d=>map.set(d.id,{id:d.id,...d.data()}));
+    s2.docs.forEach(d=>map.set(d.id,{id:d.id,...d.data()}));
+    await idbPutMessages(Array.from(map.values()));
+    await idbSetMeta("lastSync_"+me.uid,Date.now());
+    if(currentConversationId)await renderLocalMessages(currentConversationId,25);
+  }catch(e){console.warn("Delta sync:",e)}
+  finally{setSyncUI(false);syncInProgress=false}
+}
+function setSyncUI(show,text="Syncing…"){
+  $("syncBar").classList.toggle("hidden",!show);$("syncText").textContent=text;
+}
+function updateConnectivity(){
+  const off=!navigator.onLine;
+  document.body.classList.toggle("offline",off);
+  $("offlineBar").classList.toggle("hidden",!off);
+  if(!off)deltaSync();
+}
+function installPullToRefresh(){
+  const area=$("chatPanel")||document.body,indicator=$("pullRefresh");
+  let startY=0,dist=0,tracking=false;
+  area.addEventListener("touchstart",e=>{
+    const target=$("messages");
+    if(target&&target.scrollTop<=0){startY=e.touches[0].clientY;tracking=true;dist=0}
+  },{passive:true});
+  area.addEventListener("touchmove",e=>{
+    if(!tracking)return;dist=e.touches[0].clientY-startY;
+    if(dist>0){
+      const p=Math.min(1,dist/90);
+      indicator.style.marginTop=(-48+p*54)+"px";
+      indicator.style.transform=`translateX(-50%) rotate(${p*180}deg)`;
+      indicator.classList.toggle("ready",dist>70);
+    }
+  },{passive:true});
+  area.addEventListener("touchend",async()=>{
+    if(!tracking)return;tracking=false;
+    const refresh=dist>70;indicator.classList.remove("ready");
+    if(refresh){
+      indicator.classList.add("refreshing");indicator.style.marginTop="10px";
+      await deltaSync();await new Promise(r=>setTimeout(r,250));
+      indicator.classList.remove("refreshing");
+    }
+    indicator.style.marginTop="-48px";indicator.style.transform="translateX(-50%)";dist=0;
+  });
+}
+
+const SUPPORT_EMAIL="hkshahadot24@gmail.com";
+const DEFAULT_APP_URL=window.location.href.split("#")[0];
+
+function syncMenu(){
+  if(!profile)return;
+  $("menuAvatar").src=avatar(profile);
+  $("menuName").textContent=profile.displayName||me?.displayName||"User";
+  $("menuEmail").textContent=profile.email||me?.email||"";
+  $("supportEmailLabel").textContent=SUPPORT_EMAIL;
+}
+function applyTheme(dark,save=true){
+  document.documentElement.classList.toggle("dark",dark);
+  document.body.classList.toggle("dark",dark);
+  $("themeToggle").checked=dark;
+  if(save)localStorage.setItem("fm_theme",dark?"dark":"light");
+}
+function applyNotifications(on,save=true){
+  $("notificationToggle").checked=on;
+  if(save)localStorage.setItem("fm_notifications",on?"on":"off");
+}
+function playNotificationSound(){
+  if(localStorage.getItem("fm_notifications")==="off")return;
+  try{
+    const C=window.AudioContext||window.webkitAudioContext;
+    if(!C)return;
+    const c=new C(),o=c.createOscillator(),g=c.createGain();
+    o.frequency.value=880;g.gain.value=.035;o.connect(g);g.connect(c.destination);
+    o.start();o.stop(c.currentTime+.08);
+  }catch(_){}
+}
+async function shareApp(){
+  const data={title:"Fast Messenger",text:"Fast Messenger-এ যোগ দিন",url:DEFAULT_APP_URL};
+  try{
+    if(navigator.share)await navigator.share(data);
+    else{await navigator.clipboard.writeText(DEFAULT_APP_URL);toast("App link copied")}
+  }catch(e){if(e?.name!=="AbortError")toast("Share করা যায়নি")}
+}
+function supportEmail(){
+  if(!SUPPORT_EMAIL||SUPPORT_EMAIL.includes("YOUR_SUPPORT_EMAIL"))return toast("app.js-এ SUPPORT_EMAIL সেট করুন");
+  const subject=encodeURIComponent("Fast Messenger Support / Feedback");
+  const body=encodeURIComponent(`Hello Support,\n\nআমার সমস্যা / মতামত:\n\n\nUser: ${me?.email||""}`);
+  location.href=`mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
+}
+function showSettings(){showView("settingsView");$("moreMenu").classList.add("hidden")}
+function showProfile(){showView("profileView");$("moreMenu").classList.add("hidden")}
+function confirmDeleteAccount(){
+  if(!me)return;
+  const ok=confirm("অ্যাকাউন্ট ডিলিট করলে এই অ্যাপের profile, friend list, friend request এবং আপনার messages মুছে যাবে। Google account মুছবে না।\n\nআপনি কি এগোতে চান?");
+  if(ok)deleteAccount();
+}
+async function deleteAccount(){
+  const btn=$("deleteAccountBtn");btn.disabled=true;
+  try{
+    const uid=me.uid;
+    const targets=[];
+    const snap=await db.ref().once("value");
+    const root=snap.val()||{};
+    ["users","friends","friendRequests","messages","groups","calls","notifications","typing","presence"].forEach(name=>{
+      const node=root[name]||{};
+      Object.entries(node).forEach(([id,v])=>{
+        const related = name==="users" ? id===uid : name==="friends" ? v?.ownerUid===uid||v?.friendUid===uid : name==="friendRequests" ? v?.senderUid===uid||v?.receiverUid===uid : name==="messages" ? v?.senderUid===uid||v?.receiverUid===uid||v?.groupMemberUids?.includes?.(uid) : name==="groups" ? v?.ownerUid===uid||v?.memberUids?.includes?.(uid) : name==="calls" ? v?.callerUid===uid||v?.receiverUid===uid||v?.recipientUids?.includes?.(uid) : id===uid;
+        if(related)targets.push(`${name}/${id}`);
+      });
+    });
+    const updates={};targets.forEach(path=>updates[path]=null);if(Object.keys(updates).length)await db.ref().update(updates);
+    await auth.currentUser.delete();
+  }catch(e){
+    console.error(e);
+    if(e?.code==="auth/requires-recent-login")toast("নিরাপত্তার জন্য আবার Google login করে Delete Account চালান");
+    else toast("Account delete করা যায়নি");
+  }finally{btn.disabled=false}
+}
+
+async function clearCache(){
+  try{
+    localStorage.removeItem("fm_theme");
+    localStorage.removeItem("fm_notifications");
+    sessionStorage.clear();
+    if("caches" in window){const ks=await caches.keys();await Promise.all(ks.map(k=>caches.delete(k)))}
+    toast("Temporary cache cleared");
+  }catch(e){toast("Cache clear সম্পূর্ণ হয়নি")}
+}
+function initPreferences(){
+  applyTheme(localStorage.getItem("fm_theme")==="dark",false);
+  applyNotifications(localStorage.getItem("fm_notifications")!=="off",false);
+}
+
+$("googleLogin").onclick=async()=>{const b=$("googleLogin");b.disabled=true;try{await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider())}catch(e){console.error(e);$("loginError").textContent=e.message||"Login failed"}finally{b.disabled=false}};
+function showCachedShell(){
+  const cachedUid=localStorage.getItem("fm_session_uid");
+  if(!cachedUid)return false;
+  $("loginScreen").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  document.body.classList.remove("booting");
+  return true;
+}
+const hadCachedSession=showCachedShell();
+
+auth.onAuthStateChanged(async user=>{
+  authResolved=true;
+  if(user){
+    me=user;localStorage.setItem("fm_session_uid",user.uid);
+    $("loginScreen").classList.add("hidden");$("app").classList.remove("hidden");
+    document.body.classList.remove("booting");
+    profile=loadLocal("profile",{uid:user.uid,displayName:user.displayName||user.email?.split("@")[0]||"User",email:user.email||"",photoURL:user.photoURL||null,bio:"Fast Messenger profile"});
+    syncProfile();syncMenu();hydrateLocalCache();
+    heartbeat();startListeners();watchIncomingNotifications();watchCallInvites();
+    ensureUser().then(()=>saveLocal("profile",profile)).catch(e=>console.warn("profile sync delayed",e));
+  }else{
+    localStorage.removeItem("fm_session_uid");
+    me=null;profile=null;
+    $("app").classList.add("hidden");$("loginScreen").classList.remove("hidden");
+    document.body.classList.remove("booting");
+  }
+});
+
+document.querySelectorAll(".nav-item").forEach(b=>b.onclick=()=>showView(b.dataset.view));
+document.querySelectorAll("[data-people-tab]").forEach(b=>b.onclick=()=>{peopleTab=b.dataset.peopleTab;document.querySelectorAll("[data-people-tab]").forEach(x=>x.classList.toggle("active",x===b));renderPeople()});
+$("peopleSearch").oninput=renderPeople;$("chatSearch").oninput=renderChats;$("groupSearch").oninput=renderGroups;$("createGroupBtn").onclick=showGroupModal;$("saveGroupBtn").onclick=createGroup;
+$("refreshBtn").onclick=()=>{renderChats();renderPeople();toast("Refreshed")};
+$("backChat").onclick=closeChat;$("composer").onsubmit=sendMessage;
+$("messageInput").addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,120)+"px";handleTyping()});
+$("pickImage").onclick=()=>$("imageInput").click();
+$("pickFile").onclick=()=>$("fileInput").click();
+$("imageInput").onchange=e=>{
+  const incoming=Array.from(e.target.files||[]).filter(f=>f.type.startsWith("image/"));
+  attachedImages=[...attachedImages,...incoming].slice(0,10);
+  e.target.value="";renderUploadQueue();
+};
+$("fileInput").onchange=e=>{
+  const incoming=Array.from(e.target.files||[]);
+  attachedFiles=[...attachedFiles,...incoming].slice(0,10);
+  e.target.value="";renderUploadQueue();
+};
+$("profileBtn").onclick=()=>showProfile();
+$("settingsFromProfile").onclick=showSettings;
+
+$("logoutBtn").onclick=async()=>{
+  if(!confirm("Log out করবেন?"))return;
+  const uid=me?.uid;
+  try{
+    if(uid){await USERS().doc(uid).set({online:false,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(e=>console.warn("logout presence update",e));}
+  }finally{
+    try{await auth.signOut();}catch(e){console.error("signOut",e);toast("Logout করা যায়নি");return;}
+    localStorage.removeItem("fm_session_uid");
+    me=null;profile=null;friends=[];requests=[];sentRequests=[];users=[];groups=[];messageMap.clear();
+  }
+};
+document.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>$(b.dataset.close).classList.add("hidden"));
+$("chatInfo").onclick=()=>{if(!activeFriend)return;if(activeFriend.isGroup){toast(`${activeFriend.name||"Group"} · ${(activeFriend.memberUids||[]).length} জন সদস্য`);return}openUser(activeFriend.uid)};
+$("closeLightbox").onclick=()=>{$("lightbox").classList.add("hidden");$("lightboxImg").src=""};
+
+
+// ===== v3 UI wiring =====
+initPreferences();
+
+$("menuBtn").onclick=(e)=>{e.stopPropagation();syncMenu();$("moreMenu").classList.toggle("hidden")};
+document.querySelectorAll("[data-menu-action]").forEach(b=>b.onclick=async()=>{
+  const a=b.dataset.menuAction;
+  if(a==="profile")showProfile();
+  if(a==="settings")showSettings();
+  if(a==="share"){ $("moreMenu").classList.add("hidden"); await shareApp(); }
+  if(a==="support"){ $("moreMenu").classList.add("hidden"); supportEmail(); }
+  if(a==="logout"){ $("moreMenu").classList.add("hidden"); $("logoutBtn").click(); }
+});
+document.addEventListener("click",e=>{
+  if(!$("moreMenu").contains(e.target)&&!$("menuBtn").contains(e.target))$("moreMenu").classList.add("hidden");
+});
+$("settingsBack").onclick=()=>showView("profileView");
+$("themeToggle").onchange=e=>applyTheme(e.target.checked);
+$("notificationToggle").onchange=e=>applyNotifications(e.target.checked);
+$("aboutBtn").onclick=()=>$("aboutModal").classList.remove("hidden");
+$("aboutEmailBtn").onclick=supportEmail;
+$("privacyBtn").onclick=()=>$("privacyModal").classList.remove("hidden");
+$("clearCacheBtn").onclick=clearCache;
+$("supportBtn").onclick=supportEmail;
+$("accountManagementBtn").onclick=()=>{
+  const b=$("accountManagementBtn"),panel=$("accountManagementPanel");
+  const open=panel.classList.toggle("hidden")===false;
+  b.setAttribute("aria-expanded",open?"true":"false");
+};
+$("deleteAccountBtn").onclick=confirmDeleteAccount;
+
+// In-app alert/sound for new incoming messages.
+let lastKnownIncoming=0;
+function watchIncomingNotifications(){
+  if(!me)return;
+  MESSAGES().where("receiverUid","==",me.uid).onSnapshot(s=>{
+    const fresh=s.docChanges().filter(c=>c.type==="added").map(c=>c.doc.data()).filter(m=>Number(m.createdAt||0)>0);
+    if(!fresh.length)return;
+    const newest=Math.max(...fresh.map(m=>Number(m.createdAt||0)));
+    if(lastKnownIncoming && newest>lastKnownIncoming && (!activeFriend || fresh.some(m=>m.senderUid!==activeFriend.uid))){
+      playNotificationSound();
+      toast("নতুন message এসেছে");
+    }
+    lastKnownIncoming=Math.max(lastKnownIncoming,newest);
+  });
+}
+
+$("audioCallBtn").onclick=()=>startCall("audio");
+$("videoCallBtn").onclick=()=>startCall("video");
+$("acceptCallBtn").onclick=acceptCall;
+$("rejectCallBtn").onclick=rejectIncomingCall;
+$("endCallBtn").onclick=()=>endCall(false);
+$("muteCallBtn").onclick=toggleMute;
+$("cameraCallBtn").onclick=toggleCamera;
+$("speakerCallBtn").onclick=openAudioOutputMenu;
+$("callParticipantsBtn").onclick=()=>{renderCallParticipants();$("callParticipantsPanel")?.classList.toggle("hidden")};
+$("closeCallParticipantsBtn").onclick=closeCallParticipants;
+$("callParticipantsList").onclick=e=>{
+  const b=e.target.closest("[data-call-person-action]");if(!b)return;
+  const uid=b.dataset.uid,action=b.dataset.callPersonAction;
+  if(action==="mute")toggleRemoteMute(uid);
+  else if(action==="pin")pinCallParticipant(uid);
+  else if(action==="remove")removeCallParticipant(uid);
+};
+document.addEventListener("click",e=>{const menu=$("audioOutputMenu");if(!menu||menu.classList.contains("hidden"))return;if(!menu.contains(e.target)&&!$("speakerCallBtn")?.contains(e.target))menu.classList.add("hidden")});
+
+const originalAuthHandler = auth.currentUser;
+
+// Initialize internal sub-links once the DOM is ready.
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",initAppHistory,{once:true});else initAppHistory();
+
+// ===== v4 startup hooks =====
+window.addEventListener("online",updateConnectivity);
+window.addEventListener("offline",updateConnectivity);
+document.addEventListener("DOMContentLoaded",async()=>{
+  try{await idbOpen()}catch(e){console.warn("IndexedDB unavailable",e)}
+  updateConnectivity();
+  installPullToRefresh();
+  const box=$("messages");
+  if(box)box.addEventListener("scroll",()=>{
+    if(box.scrollTop<90 && activeFriend&&!syncInProgress){
+      const conversationId=activeFriend.isGroup?activeFriend.uid:pair(me.uid,activeFriend.uid);
+      if(conversationId&&oldestLoadedCreatedAt)loadOlderLocalMessages();
+    }
+  });
+});
+
+
+/* Camera preview controls */
+document.addEventListener("click",async e=>{
+  const id=e.target.closest("button")?.id;
+  if(id==="closeCameraPreviewBtn"){closeCameraPreview();return}
+  if(id==="previewMuteBtn"){togglePreviewMute();return}
+  if(id==="previewFlipBtn"){await flipPreviewCamera();return}
+  if(id==="previewLightBtn"){togglePreviewLight();return}
+  if(id==="startVideoCallBtn"){if(pendingVideoCall){const mode=pendingVideoCall.mode;closeCameraPreview();pendingVideoCall=null;await launchCall(mode)}}
+});
