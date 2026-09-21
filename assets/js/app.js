@@ -646,10 +646,21 @@ function startListeners(){
   });
 
   safeListen("friends",FRIENDS(),s=>{
-    friends=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.ownerUid===me.uid);
-    friendsSyncReady=true;
-    saveLocal("friends",friends);
-    saveLocal("chatRooms",buildChatRoomCache());
+    const liveFriends=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>String(x.ownerUid)===String(me.uid));
+    const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
+    const cachedFriends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
+    // Never let an empty/partial first snapshot erase the last known Home rooms.
+    // A later non-empty realtime snapshot replaces the cache with authoritative data.
+    if(liveFriends.length>0 || cachedFriends.length===0){
+      friends=liveFriends;
+      friendsSyncReady=true;
+      saveLocal("friends",friends);
+      const rooms=buildChatRoomCache();
+      if(rooms.length)saveLocal("chatRooms",rooms);
+    }else{
+      friends=cachedFriends;
+      friendsSyncReady=false;
+    }
     renderPeople();renderGroups();renderChats();updateStats();
   });
 
@@ -666,7 +677,7 @@ function startListeners(){
       .sort((a,b)=>(b.createdAt?.toMillis?.()||Number(b.createdAt)||0)-(a.createdAt?.toMillis?.()||Number(a.createdAt)||0));
     groupsSyncReady=true;
     saveLocal("groups",groups);
-    saveLocal("chatRooms",buildChatRoomCache());
+    const rooms=buildChatRoomCache();if(rooms.length)saveLocal("chatRooms",rooms);
     renderGroups();renderChats();
   });
 
@@ -675,19 +686,69 @@ function startListeners(){
     const mine=all.filter(m=>m.senderUid===me.uid||m.receiverUid===me.uid||(Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(id=>String(id)===String(me.uid))));
     messageMap=new Map(mine.map(m=>[m.id,m]));
     messagesSyncReady=true;
-    cacheMessages();saveLocal("chatRooms",buildChatRoomCache());renderChats();updateStats();if(activeFriend)renderMessages();
+    cacheMessages();const rooms=buildChatRoomCache();if(rooms.length)saveLocal("chatRooms",rooms);renderChats();updateStats();if(activeFriend)renderMessages();
   });
 }
 function cacheKey(name){return CACHE_PREFIX+name+(me?"_"+me.uid:"")}
-function saveLocal(name,value){try{localStorage.setItem(cacheKey(name),JSON.stringify(value))}catch(_){}}
-function loadLocal(name,fallback){try{const raw=localStorage.getItem(cacheKey(name));return raw?JSON.parse(raw):fallback}catch(_){return fallback}}
+function persistentChatRoomsKey(){return me?`fm_persistent_chat_rooms_${me.uid}`:""}
+function readLegacyChatRoomCaches(){
+  if(!me)return [];
+  const found=[];
+  try{
+    const suffix=`_chatRooms_${me.uid}`;
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k&&k.endsWith(suffix)){
+        const raw=localStorage.getItem(k);
+        const v=raw?JSON.parse(raw):[];
+        if(Array.isArray(v))found.push(...v);
+      }
+    }
+  }catch(_){}
+  return found;
+}
+function normalizeChatRooms(list){
+  const out=new Map();
+  (Array.isArray(list)?list:[]).forEach(x=>{
+    if(!x)return;
+    if(x.kind==="friend"&&(x.friend?.friendUid||x.friendUid))out.set(`f:${x.friend?.friendUid||x.friendUid}`,{kind:"friend",friend:{...(x.friend||x)}});
+    else if(x.kind==="group"&&(x.group?.id||x.group?.uid||x.id))out.set(`g:${x.group?.id||x.group?.uid||x.id}`,{kind:"group",group:{...(x.group||x)}});
+  });
+  return [...out.values()];
+}
+function saveLocal(name,value){
+  try{localStorage.setItem(cacheKey(name),JSON.stringify(value));
+    if(name==="chatRooms"&&me){
+      const normalized=normalizeChatRooms(value);
+      if(normalized.length)localStorage.setItem(persistentChatRoomsKey(),JSON.stringify(normalized));
+    }
+  }catch(_){}
+}
+function loadLocal(name,fallback){
+  try{
+    const raw=localStorage.getItem(cacheKey(name));
+    if(raw)return JSON.parse(raw);
+    if(name==="chatRooms"&&me){
+      const stable=localStorage.getItem(persistentChatRoomsKey());
+      if(stable)return JSON.parse(stable);
+      const legacy=readLegacyChatRoomCaches();
+      if(legacy.length)return normalizeChatRooms(legacy);
+    }
+    return fallback;
+  }catch(_){return fallback}
+}
 function hydrateLocalCache(){
   if(!me)return;
   const u=loadLocal("users",[]),f=loadLocal("friends",[]),r=loadLocal("requests",[]),sr=loadLocal("sentRequests",[]),g=loadLocal("groups",[]),m=loadLocal("messages",[]);
   if(Array.isArray(u))users=u; if(Array.isArray(f))friends=f; if(Array.isArray(r))requests=r; if(Array.isArray(sr))sentRequests=sr; if(Array.isArray(g))groups=g;
   messageMap=new Map((Array.isArray(m)?m:[]).map(x=>[x.id,x]));
-  const cachedRooms=loadLocal("chatRooms",[]);
-  if(Array.isArray(cachedRooms)&&cachedRooms.length&&!friends.length)friends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend||x).filter(Boolean);
+  const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
+  if(cachedRooms.length){
+    const cachedFriends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
+    const cachedGroups=cachedRooms.filter(x=>x.kind==="group").map(x=>x.group).filter(Boolean);
+    if(!friends.length)friends=cachedFriends;
+    if(!groups.length)groups=cachedGroups;
+  }
   renderPeople();renderGroups();renderChats();updateStats();
 }
 function buildChatRoomCache(){
@@ -695,7 +756,17 @@ function buildChatRoomCache(){
   const rooms=[];
   friends.forEach(f=>rooms.push({kind:"friend",friend:{...f}}));
   groups.forEach(g=>rooms.push({kind:"group",group:{...g}}));
-  return rooms;
+  // Also persist people found in message history so a refresh never blanks an existing room.
+  const known=new Set(rooms.filter(r=>r.kind==="friend").map(r=>String(r.friend?.friendUid||"")));
+  messageMap.forEach(m=>{
+    if(m?.groupId)return;
+    const uid=String(m?.senderUid===me.uid?m?.receiverUid:m?.senderUid||"");
+    if(uid&&!known.has(uid)){
+      const u=users.find(x=>String(x.uid)===uid)||friends.find(x=>String(x.friendUid)===uid);
+      if(u){rooms.push({kind:"friend",friend:{friendUid:uid,ownerUid:me.uid,...u}});known.add(uid)}
+    }
+  });
+  return normalizeChatRooms(rooms);
 }
 function cacheMessages(){saveLocal("messages",[...messageMap.values()].slice(-800))}
 function callDurationPreview(m){
@@ -716,7 +787,9 @@ function renderChats(){
   // Show every accepted friend in the Home chat list, even before the first message.
   // On a hard refresh, render the last known room list immediately; the realtime
   // listener then replaces it with the current Firebase state.
-  const roomFriends=(friendsSyncReady||friends.length)?friends:loadLocal("chatRooms",[]).filter(x=>x.kind==="friend").map(x=>x.friend||x).filter(Boolean);
+  const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
+  const cachedFriends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
+  const roomFriends=friends.length?friends:(cachedFriends.length?cachedFriends:[]);
   roomFriends.forEach(f=>{if(f.friendUid&&!by.has(f.friendUid))by.set(f.friendUid,null)});
   let rows=[...by.entries()].map(([uid,m])=>({uid,m,u:users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid)||{uid,displayName:"User"}}));
   if(q)rows=rows.filter(r=>(r.u.displayName||"").toLowerCase().includes(q)||(r.u.email||"").toLowerCase().includes(q)||(r.m?.text||"").toLowerCase().includes(q));
@@ -731,6 +804,8 @@ function renderChats(){
     return `<button class="chat-item" onclick="openChat('${esc(r.uid)}')"><img class="avatar" src="${esc(avatar(r.u))}"><span class="item-copy"><strong>${esc(r.u.displayName||r.u.email||"User")}</strong><small>${esc(preview)}</small></span><time class="item-meta">${r.m?time(r.m.createdAt):"Friend"}</time></button>`;
   }).join("");
   box.innerHTML=groupRows+personal||`<div class="empty"><i class="fa-regular fa-comments" style="font-size:28px;display:block;margin-bottom:10px"></i>কোনো conversation নেই। People থেকে একজনকে বেছে নিয়ে chat শুরু করুন।</div>`;
+  const snapshot=buildChatRoomCache();
+  if(snapshot.length)saveLocal("chatRooms",snapshot);
 }
 function renderGroups(){const box=$("groupList");if(!box)return;const q=($("groupSearch")?.value||"").trim().toLowerCase();const rows=groups.filter(g=>!q||(g.name||"").toLowerCase().includes(q));box.innerHTML=rows.length?rows.map(g=>{const ms=groupMemberUsers(g).slice(0,4);return`<button class="chat-item" onclick="openGroupChat('${esc(g.id)}')"><span class="group-avatar-mini">${ms.map(u=>`<img src="${esc(avatar(u))}" alt="">`).join("")}</span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${(g.memberUids||[]).length} জন সদস্য · ${esc((g.memberUids||[]).includes(me.uid)?"আপনি সদস্য":"")}</small></span><span class="item-meta"><i class="fa-solid fa-chevron-right"></i></span></button>`}).join(""):`<div class="empty"><i class="fa-solid fa-user-group" style="font-size:28px;display:block;margin-bottom:10px"></i>এখনও কোনো গ্রুপ নেই।<br>নতুন গ্রুপ তৈরি করে আপনার বন্ধুদের যোগ করুন।</div>`}
 function renderGroupPicker(){const box=$("groupFriendPicker"),count=$("groupMemberCount");if(!box)return;const fs=friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User",email:""});if(!fs.length){box.innerHTML='<div class="empty" style="padding:25px 10px;background:transparent;border:0">আগে অন্তত একজন বন্ধুকে Add করুন, তারপর গ্রুপ তৈরি করতে পারবেন।</div>';$("saveGroupBtn").disabled=true;return}box.innerHTML=fs.map(u=>`<label class="group-friend-row"><input type="checkbox" value="${esc(u.uid)}"><img src="${esc(avatar(u))}" alt=""><span class="item-copy"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></span></label>`).join("");const update=()=>{const n=box.querySelectorAll("input:checked").length;count.textContent=`${n} জন নির্বাচিত`;$("saveGroupBtn").disabled=n<1};box.querySelectorAll("input").forEach(x=>x.onchange=update);update()}
