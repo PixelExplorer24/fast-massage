@@ -15,6 +15,19 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics-compat.js"></script>
 <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.24.0.js"></script>
+<style id="messenger-theme-background">
+:root{--messenger-theme-bg:url("./assets/theme-background.webp");}
+html,body{min-height:100%;}
+body{background:#eef8ff var(--messenger-theme-bg) center center/cover fixed no-repeat !important;}
+body.dark{background:#0b1220 var(--messenger-theme-bg) center center/cover fixed no-repeat !important;}
+.app,.view,.main{background:transparent !important;}
+.view{background:rgba(255,255,255,.72) !important;backdrop-filter:blur(2px);}
+body.dark .view{background:rgba(11,18,32,.72) !important;}
+.chat-panel{background:rgba(255,255,255,.82) !important;backdrop-filter:blur(5px);}
+body.dark .chat-panel{background:rgba(11,18,32,.86) !important;}
+.messages{background:transparent !important;}
+@media (max-width:700px){body{background-position:center top;background-attachment:scroll;}.view{background:rgba(255,255,255,.78) !important;}}
+</style>
 </head>
 <body class="booting">
 <div id="offlineBar" class="offline-bar hidden"><i class="fa-solid fa-wifi"></i><span>Offline mode — saved chats are available</span></div>

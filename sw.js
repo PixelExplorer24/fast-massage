@@ -1,6 +1,6 @@
-const CACHE="fast-messenger-shell-v7";
-const RUNTIME="fast-messenger-runtime-v7";
-const SHELL=["./","./index.html","./assets/css/app.css","./assets/js/app.js","./manifest.webmanifest","./icon.svg"];
+const CACHE="fast-messenger-shell-v8";
+const RUNTIME="fast-messenger-runtime-v8";
+const SHELL=["./","./index.html","./assets/js/app.js","./assets/theme-background.webp"];
 self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting())));
 self.addEventListener("activate",e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>![CACHE,RUNTIME].includes(k)).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener("fetch",e=>{
