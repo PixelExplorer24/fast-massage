@@ -109,7 +109,9 @@ const CALLS=()=>new RTCollection("calls");
 const IMAGE_UPLOAD_KEY="1abc9f66636c45ace1d0952e080d153d";
 const FILE_UPLOAD_ENDPOINT="https://upload.gofile.io/uploadfile";
 let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=[],activeFriend=null,chatUnsubs=[],listUnsubs=[],typingUnsub=null,typingTimer=null,attachedImages=[],attachedFiles=[],messageMap=new Map(),activeMessageMap=new Map(),peopleTab="friends";
-const CACHE_PREFIX="fm_cache_v11_";
+const CACHE_PREFIX="fm_cache_v12_";
+const PERSISTENT_FRIENDS_PREFIX="fm_friend_registry_v1_";
+const PERSISTENT_ROOMS_PREFIX="fm_chat_rooms_registry_v1_";
 let friendsSyncReady=false,groupsSyncReady=false,messagesSyncReady=false;
 let authResolved=false;
 const AGORA_APP_ID="addaf4af54e845beb818de869a7de813";
@@ -651,14 +653,15 @@ function startListeners(){
     const cachedFriends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
     // Never let an empty/partial first snapshot erase the last known Home rooms.
     // A later non-empty realtime snapshot replaces the cache with authoritative data.
-    if(liveFriends.length>0 || cachedFriends.length===0){
-      friends=liveFriends;
+    if(liveFriends.length>0){
+      friends=mergePersistentFriends(liveFriends)||liveFriends;
       friendsSyncReady=true;
       saveLocal("friends",friends);
       const rooms=buildChatRoomCache();
       if(rooms.length)saveLocal("chatRooms",rooms);
     }else{
-      friends=cachedFriends;
+      const registry=Array.isArray(readJsonKey(persistentFriendsKey(),[]))?readJsonKey(persistentFriendsKey(),[]):[];
+      friends=cachedFriends.length?cachedFriends:(registry.length?registry:friends);
       friendsSyncReady=false;
     }
     renderPeople();renderGroups();renderChats();updateStats();
@@ -690,12 +693,41 @@ function startListeners(){
   });
 }
 function cacheKey(name){return CACHE_PREFIX+name+(me?"_"+me.uid:"")}
-function persistentChatRoomsKey(){return me?`fm_persistent_chat_rooms_${me.uid}`:""}
+function persistentChatRoomsKey(){return me?`${PERSISTENT_ROOMS_PREFIX}${me.uid}`:""}
+function persistentFriendsKey(){return me?`${PERSISTENT_FRIENDS_PREFIX}${me.uid}`:""}
+function readJsonKey(key,fallback){try{const raw=key&&localStorage.getItem(key);return raw?JSON.parse(raw):fallback}catch(_){return fallback}}
+function mergePersistentFriends(list){
+  if(!me)return;
+  const incoming=Array.isArray(list)?list.filter(Boolean):[];
+  const old=Array.isArray(readJsonKey(persistentFriendsKey(),[]))?readJsonKey(persistentFriendsKey(),[]):[];
+  const map=new Map();
+  [...old,...incoming].forEach(f=>{const uid=String(f?.friendUid||f?.uid||"");if(uid)map.set(uid,{...f,friendUid:f.friendUid||f.uid,ownerUid:f.ownerUid||me.uid})});
+  try{localStorage.setItem(persistentFriendsKey(),JSON.stringify([...map.values()]))}catch(_){}
+  const rooms=normalizeChatRooms([...normalizeChatRooms(readJsonKey(persistentChatRoomsKey(),[])),...incoming.map(f=>({kind:"friend",friend:{...f,friendUid:f.friendUid||f.uid,ownerUid:f.ownerUid||me.uid}}))]);
+  if(rooms.length)try{localStorage.setItem(persistentChatRoomsKey(),JSON.stringify(rooms))}catch(_){}
+  return [...map.values()];
+}
 function readLegacyChatRoomCaches(){
   if(!me)return [];
   const found=[];
   try{
     const suffix=`_chatRooms_${me.uid}`;
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k&&k.endsWith(suffix)){
+        const raw=localStorage.getItem(k);
+        const v=raw?JSON.parse(raw):[];
+        if(Array.isArray(v))found.push(...v);
+      }
+    }
+  }catch(_){}
+  return found;
+}
+function readLegacyCollectionCaches(name){
+  if(!me)return [];
+  const found=[];
+  try{
+    const suffix=`_${name}_${me.uid}`;
     for(let i=0;i<localStorage.length;i++){
       const k=localStorage.key(i);
       if(k&&k.endsWith(suffix)){
@@ -718,9 +750,14 @@ function normalizeChatRooms(list){
 }
 function saveLocal(name,value){
   try{localStorage.setItem(cacheKey(name),JSON.stringify(value));
+    if(name==="friends"&&me)mergePersistentFriends(value);
     if(name==="chatRooms"&&me){
       const normalized=normalizeChatRooms(value);
-      if(normalized.length)localStorage.setItem(persistentChatRoomsKey(),JSON.stringify(normalized));
+      if(normalized.length){
+        const existing=normalizeChatRooms(readJsonKey(persistentChatRoomsKey(),[]));
+        const merged=normalizeChatRooms([...existing,...normalized]);
+        localStorage.setItem(persistentChatRoomsKey(),JSON.stringify(merged));
+      }
     }
   }catch(_){}
 }
@@ -728,9 +765,17 @@ function loadLocal(name,fallback){
   try{
     const raw=localStorage.getItem(cacheKey(name));
     if(raw)return JSON.parse(raw);
+    if(name==="friends"&&me){
+      const stable=readJsonKey(persistentFriendsKey(),[]);
+      if(Array.isArray(stable)&&stable.length)return stable;
+      const legacyFriends=readLegacyCollectionCaches("friends");
+      if(legacyFriends.length){mergePersistentFriends(legacyFriends);return legacyFriends;}
+    }
     if(name==="chatRooms"&&me){
-      const stable=localStorage.getItem(persistentChatRoomsKey());
-      if(stable)return JSON.parse(stable);
+      const stable=readJsonKey(persistentChatRoomsKey(),[]);
+      if(Array.isArray(stable)&&stable.length)return stable;
+      const legacyStable=readJsonKey(`fm_persistent_chat_rooms_${me.uid}`,[]);
+      if(Array.isArray(legacyStable)&&legacyStable.length)return legacyStable;
       const legacy=readLegacyChatRoomCaches();
       if(legacy.length)return normalizeChatRooms(legacy);
     }
@@ -740,8 +785,12 @@ function loadLocal(name,fallback){
 function hydrateLocalCache(){
   if(!me)return;
   const u=loadLocal("users",[]),f=loadLocal("friends",[]),r=loadLocal("requests",[]),sr=loadLocal("sentRequests",[]),g=loadLocal("groups",[]),m=loadLocal("messages",[]);
-  if(Array.isArray(u))users=u; if(Array.isArray(f))friends=f; if(Array.isArray(r))requests=r; if(Array.isArray(sr))sentRequests=sr; if(Array.isArray(g))groups=g;
+  if(Array.isArray(u))users=u;
+  if(Array.isArray(f)&&f.length)friends=f;
+  if(Array.isArray(r))requests=r; if(Array.isArray(sr))sentRequests=sr; if(Array.isArray(g))groups=g;
   messageMap=new Map((Array.isArray(m)?m:[]).map(x=>[x.id,x]));
+  const registryFriends=Array.isArray(readJsonKey(persistentFriendsKey(),[]))?readJsonKey(persistentFriendsKey(),[]):[];
+  if(!friends.length&&registryFriends.length)friends=registryFriends;
   const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
   if(cachedRooms.length){
     const cachedFriends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
@@ -754,7 +803,9 @@ function hydrateLocalCache(){
 function buildChatRoomCache(){
   if(!me)return [];
   const rooms=[];
-  friends.forEach(f=>rooms.push({kind:"friend",friend:{...f}}));
+  const registryFriends=Array.isArray(readJsonKey(persistentFriendsKey(),[]))?readJsonKey(persistentFriendsKey(),[]):[];
+  const sourceFriends=friends.length?friends:registryFriends;
+  sourceFriends.forEach(f=>rooms.push({kind:"friend",friend:{...f}}));
   groups.forEach(g=>rooms.push({kind:"group",group:{...g}}));
   // Also persist people found in message history so a refresh never blanks an existing room.
   const known=new Set(rooms.filter(r=>r.kind==="friend").map(r=>String(r.friend?.friendUid||"")));
@@ -789,7 +840,8 @@ function renderChats(){
   // listener then replaces it with the current Firebase state.
   const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
   const cachedFriends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
-  const roomFriends=friends.length?friends:(cachedFriends.length?cachedFriends:[]);
+  const registryFriends=Array.isArray(readJsonKey(persistentFriendsKey(),[]))?readJsonKey(persistentFriendsKey(),[]):[];
+  const roomFriends=friends.length?friends:(cachedFriends.length?cachedFriends:registryFriends);
   roomFriends.forEach(f=>{if(f.friendUid&&!by.has(f.friendUid))by.set(f.friendUid,null)});
   let rows=[...by.entries()].map(([uid,m])=>({uid,m,u:users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid)||{uid,displayName:"User"}}));
   if(q)rows=rows.filter(r=>(r.u.displayName||"").toLowerCase().includes(q)||(r.u.email||"").toLowerCase().includes(q)||(r.m?.text||"").toLowerCase().includes(q));
@@ -1266,6 +1318,8 @@ auth.onAuthStateChanged(async user=>{
     document.body.classList.remove("booting");
     profile=loadLocal("profile",{uid:user.uid,displayName:user.displayName||user.email?.split("@")[0]||"User",email:user.email||"",photoURL:user.photoURL||null,bio:"Fast Messenger profile"});
     syncProfile();syncMenu();hydrateLocalCache();
+    // Render the persisted Home rooms immediately, before Firebase reconnects.
+    if(typeof requestAnimationFrame==="function")requestAnimationFrame(()=>{hydrateLocalCache();renderChats()});
     heartbeat();startListeners();watchIncomingNotifications();watchCallInvites();
     ensureUser().then(()=>saveLocal("profile",profile)).catch(e=>console.warn("profile sync delayed",e));
   }else{
