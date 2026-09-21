@@ -2,69 +2,66 @@
   "rules": {
     ".read": false,
     ".write": false,
-
     "users": {
       "$uid": {
         ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid",
         ".validate": "!newData.exists() || newData.child('uid').val() === $uid"
-      }
+      },
+      ".read": "auth != null"
     },
-
     "friends": {
       "$friendId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('ownerUid').val() === auth.uid || newData.child('friendUid').val() === auth.uid || data.child('ownerUid').val() === auth.uid || data.child('friendUid').val() === auth.uid)",
         ".validate": "!newData.exists() || (newData.child('ownerUid').isString() && newData.child('friendUid').isString() && newData.child('ownerUid').val() !== newData.child('friendUid').val())"
-      }
+      },
+      ".read": "auth != null"
     },
-
     "friendRequests": {
       "$requestId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('senderUid').val() === auth.uid || newData.child('receiverUid').val() === auth.uid || data.child('senderUid').val() === auth.uid || data.child('receiverUid').val() === auth.uid)",
         ".validate": "!newData.exists() || (newData.child('senderUid').isString() && newData.child('receiverUid').isString() && newData.child('senderUid').val() !== newData.child('receiverUid').val() && (newData.child('status').val() === 'pending' || newData.child('status').val() === 'accepted' || newData.child('status').val() === 'rejected'))"
-      }
+      },
+      ".read": "auth != null"
     },
-
     "groups": {
       "$groupId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('ownerUid').val() === auth.uid || data.child('ownerUid').val() === auth.uid)",
         ".validate": "!newData.exists() || (newData.child('ownerUid').isString() && newData.child('memberUids').exists())"
-      }
+      },
+      ".read": "auth != null"
     },
-
     "messages": {
       "$messageId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('senderUid').val() === auth.uid || newData.child('receiverUid').val() === auth.uid || (newData.child('groupMemberMap').child(auth.uid).val() === true) || data.child('senderUid').val() === auth.uid || data.child('receiverUid').val() === auth.uid || (data.child('groupMemberMap').child(auth.uid).val() === true))",
         ".validate": "!newData.exists() || (newData.child('senderUid').isString() && newData.child('createdAt').isNumber())"
-      }
+      },
+      ".read": "auth != null"
     },
-
     "calls": {
       "$callId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('callerUid').val() === auth.uid || newData.child('receiverUid').val() === auth.uid || newData.child('recipientMap').child(auth.uid).val() === true || data.child('callerUid').val() === auth.uid || data.child('receiverUid').val() === auth.uid || data.child('recipientMap').child(auth.uid).val() === true)",
         ".validate": "!newData.exists() || (newData.child('callerUid').isString() && newData.child('status').isString())"
-      }
+      },
+      ".read": "auth != null"
     },
-
     "presence": {
       "$uid": {
         ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid"
       }
     },
-
     "typing": {
       "$uid": {
         ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid"
       }
     },
-
     "notifications": {
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
