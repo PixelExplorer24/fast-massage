@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b1220">
+<link rel="icon" type="image/webp" href="./assets/logo.webp">
+<link rel="apple-touch-icon" href="./assets/logo.webp">
 <title>Fast Messenger Pro</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -30,6 +32,11 @@ body.dark .chat-item:hover,body.dark .person-item:hover,body.dark .settings-item
 body.dark .chat-panel{background:rgba(0,0,0,.10) !important;}
 .messages{background:transparent !important;}
 @media(max-width:700px){html,body{background-position:center top;background-attachment:scroll !important;}.view{background:transparent !important;}}
+
+.logo-orbit,.brand-icon{overflow:hidden}
+.logo-orbit img,.brand-icon img{width:100%;height:100%;display:block;object-fit:cover;border-radius:inherit}
+.logo-orbit img{border-radius:24px}
+.brand-icon img{border-radius:inherit}
 </style>
 </head>
 <body class="booting">
@@ -39,7 +46,7 @@ body.dark .chat-panel{background:rgba(0,0,0,.10) !important;}
 
 <section id="loginScreen" class="login-screen">
   <div class="login-card">
-    <div class="logo-orbit"><i class="fa-solid fa-paper-plane"></i></div>
+    <div class="logo-orbit"><img src="./assets/logo.webp" alt="Fast Messenger"></div>
     <h1>Fast Messenger</h1>
     <p>দ্রুত, realtime এবং media-ready private messaging.</p>
     <button id="googleLogin" class="google-btn"><i class="fa-brands fa-google"></i><span>Google দিয়ে শুরু করুন</span></button>
@@ -51,7 +58,7 @@ body.dark .chat-panel{background:rgba(0,0,0,.10) !important;}
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
-        <div class="brand-icon"><i class="fa-solid fa-paper-plane"></i></div>
+        <div class="brand-icon"><img src="./assets/logo.webp" alt="Fast Messenger"></div>
         <div><b>Fast Messenger</b><span>Private • Realtime</span></div>
       </div>
       <div class="top-actions">
