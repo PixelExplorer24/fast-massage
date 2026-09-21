@@ -112,8 +112,8 @@ let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=
 const CACHE_PREFIX="fm_cache_v10_";
 let authResolved=false;
 const AGORA_APP_ID="addaf4af54e845beb818de869a7de813";
-let agoraClient=null,localMicTrack=null,localCamTrack=null,activeCall=null,incomingCall=null,callUnsub=null,callInviteUnsub=null,remoteUsers=new Map();
-let callTimerInterval=null,callStartedAt=0;
+let agoraClient=null,localMicTrack=null,localCamTrack=null,activeCall=null,incomingCall=null,callUnsub=null,callInviteUnsub=null,notificationUnsub=null,remoteUsers=new Map();
+let callTimerInterval=null,callStartedAt=0,callRingTimer=null;
 const callEventLocks=new Set();
 function callMillis(v){return v?.toMillis?v.toMillis():rtdbToMillis(v)}
 function callEventDuration(c){
@@ -168,7 +168,12 @@ function callTarget(){return activeFriend?.isGroup?activeFriend.uid:activeFriend
 function participantName(uid){if(String(uid)===String(me?.uid))return "You";const u=users.find(x=>String(x.uid)===String(uid));return u?.displayName||u?.email?.split("@")[0]||"Participant"}
 function setCallStatus(t){if($("callStatus"))$("callStatus").textContent=t}
 function formatCallDuration(ms){const total=Math.max(0,Math.floor(ms/1000));const h=Math.floor(total/3600),m=Math.floor((total%3600)/60),s=total%60;return h?`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`}
-function stopCallTimer(){if(callTimerInterval){clearInterval(callTimerInterval);callTimerInterval=null}callStartedAt=0;const e=$("callTimer");if(e){e.textContent="00:00";e.classList.add("hidden")}}
+function stopCallTimer(){
+  if(callTimerInterval){clearInterval(callTimerInterval);callTimerInterval=null}
+  if(callRingTimer){clearTimeout(callRingTimer);callRingTimer=null}
+  callStartedAt=0;
+  const e=$("callTimer");if(e){e.textContent="00:00";e.classList.add("hidden")}
+}
 function startCallTimer(startMs){stopCallTimer();callStartedAt=Number(startMs)||Date.now();const e=$("callTimer");if(!e)return;e.classList.remove("hidden");const tick=()=>{if(e) e.textContent=formatCallDuration(Date.now()-callStartedAt)};tick();callTimerInterval=setInterval(tick,1000)}
 function setCallNetwork(level){const e=$("callNetwork");if(!e)return;e.className="call-network "+(level==="poor"?"bad":level==="fair"?"ok":"");e.innerHTML=`<i class="fa-solid fa-signal"></i> ${level==="poor"?"Weak":level==="fair"?"Fair":"Good"}`}
 let callTransitionTimer=null;
@@ -274,19 +279,53 @@ async function removeCallParticipant(uid){
 function closeCallParticipants(){ $("callParticipantsPanel")?.classList.add("hidden"); }
 async function setupAgora(mode,channel){
   if(!window.AgoraRTC)throw new Error("Agora SDK load হয়নি");
+  if(!navigator.mediaDevices?.getUserMedia)throw new Error("এই ব্রাউজারে microphone/camera access নেই");
   if(agoraClient){try{agoraClient.removeAllListeners();await agoraClient.leave()}catch(_){} agoraClient=null}
+
+  // Ask for the required permission before joining Agora. This avoids the common
+  // case where the call UI opens but the microphone track never becomes active.
+  const permissionStream=await navigator.mediaDevices.getUserMedia(mode==="video"?{audio:true,video:true}:{audio:true,video:false});
+  permissionStream.getTracks().forEach(t=>t.stop());
+
   agoraClient=AgoraRTC.createClient({mode:"rtc",codec:"vp8"});
-  agoraClient.on("user-published",async(user,mediaType)=>{await agoraClient.subscribe(user,mediaType);remoteUsers.set(user.uid,user);if(mediaType==="video")addRemoteVideo(user);if(mediaType==="audio"){user.audioTrack?.play();applyPlaybackDevice(user.audioTrack)}});
-  agoraClient.on("user-unpublished",(user,mediaType)=>{if(mediaType==="video")removeRemoteVideo(user.uid)});
-  agoraClient.on("user-left",user=>removeRemoteVideo(user.uid));
+  agoraClient.on("user-published",async(user,mediaType)=>{
+    try{
+      await agoraClient.subscribe(user,mediaType);
+      remoteUsers.set(user.uid,user);
+      if(mediaType==="video")addRemoteVideo(user);
+      if(mediaType==="audio"){
+        if(user.audioTrack){
+          await user.audioTrack.play().catch(err=>console.warn("Remote audio autoplay:",err));
+          await applyPlaybackDevice(user.audioTrack);
+        }
+      }
+      updateCallParticipants();
+    }catch(err){console.error("Agora subscribe:",err);toast("অন্য পক্ষের অডিও/ভিডিও সংযোগ করা যায়নি")}
+  });
+  agoraClient.on("user-unpublished",(user,mediaType)=>{
+    if(mediaType==="video")removeRemoteVideo(user.uid);
+    if(mediaType==="audio")updateCallParticipants();
+  });
+  agoraClient.on("user-left",user=>{removeRemoteVideo(user.uid);remoteUsers.delete(user.uid);updateCallParticipants()});
   agoraClient.on("network-quality",q=>{const n=Math.max(q.uplinkNetworkQuality||0,q.downlinkNetworkQuality||0);setCallNetwork(n>=5?"poor":n>=3?"fair":"good")});
+  agoraClient.on("connection-state-change",(cur,prev,reason)=>{
+    if(cur==="DISCONNECTED"||cur==="FAILED")setCallStatus("কল সংযোগ বিচ্ছিন্ন…");
+    if(cur==="CONNECTED"&&activeCall?.lastData?.status!=="accepted")setCallStatus("কল সংযোগ হয়েছে…");
+  });
+
+  // If Agora App Certificate is enabled in the Agora project, CALL_TOKEN must
+  // be replaced by a valid server-issued token. With certificate disabled, null
+  // is correct for this client-only setup.
   await agoraClient.join(AGORA_APP_ID,channel,CALL_TOKEN,me?.uid||null);
-  if(mode==="audio"){localMicTrack=await AgoraRTC.createMicrophoneAudioTrack({encoderConfig:"speech_low_quality"})}
-  else{
+  if(mode==="audio"){
+    localMicTrack=await AgoraRTC.createMicrophoneAudioTrack({encoderConfig:"speech_low_quality"});
+    await localMicTrack.setMuted(false);
+  }else{
     [localMicTrack,localCamTrack]=await AgoraRTC.createMicrophoneAndCameraTracks(
       {encoderConfig:"speech_low_quality"},
       {encoderConfig:{width:1920,height:1080,frameRate:30,bitrateMin:800,bitrateMax:4500}}
     );
+    await localMicTrack.setMuted(false);
     $("localVideoWrap").classList.remove("hidden");localCamTrack.play("localVideo");
   }
   await agoraClient.publish(mode==="audio"?[localMicTrack]:[localMicTrack,localCamTrack]);
@@ -318,6 +357,7 @@ async function flipPreviewCamera(){
 function togglePreviewMute(){cameraPreviewMuted=!cameraPreviewMuted;cameraPreviewStream?.getAudioTracks().forEach(t=>t.enabled=!cameraPreviewMuted);const b=$("previewMuteBtn");b?.classList.toggle("active",!cameraPreviewMuted);b?.classList.toggle("muted",cameraPreviewMuted);if(b)b.innerHTML=cameraPreviewMuted?'<i class="fa-solid fa-microphone-slash"></i><span>Muted</span>':'<i class="fa-solid fa-microphone"></i><span>Mic</span>'}
 function togglePreviewLight(){cameraPreviewLightOn=!cameraPreviewLightOn;$("cameraPreviewLight")?.classList.toggle("hidden",!cameraPreviewLightOn);$("previewLightBtn")?.classList.toggle("active",cameraPreviewLightOn)}
 
+function callSnapshotFallback(snapshot,payload){return {...payload,...(snapshot||{})};}
 async function launchCall(mode){
   if(!me||!activeFriend)return;
   if(!activeFriend.isGroup&&!isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ করতে হবে");
@@ -330,7 +370,24 @@ async function launchCall(mode){
   activeCall={callId,mode,channel,ref,caller:true,groupId:activeFriend.isGroup?activeFriend.uid:null};watchActiveCall();
   $("callHeaderName").textContent=activeFriend.isGroup?`${activeFriend.name||"Group"} · Group call`:activeFriend.displayName||"Call";
   $("callHeaderAvatar").src=avatar(activeFriend);callUi(true);updateCallParticipants();setCallStatus("Connecting…");
-  try{await setupAgora(mode,channel);setCallStatus("কলের উত্তর অপেক্ষা…")}catch(e){console.error(e);toast("কল শুরু করা যায়নি");await endCall(true)}
+  try{
+    await setupAgora(mode,channel);
+    setCallStatus("কলের উত্তর অপেক্ষা…");
+    // No-answer calls automatically become missed calls instead of remaining
+    // in the ringing state forever.
+    if(callRingTimer)clearTimeout(callRingTimer);
+    callRingTimer=setTimeout(async()=>{
+      if(activeCall?.callId!==callId||!activeCall?.caller)return;
+      try{
+        const endedAt=Date.now();
+        await ref.set({status:"ended",endedBy:me.uid,endedAt,callOutcome:"missed"},{merge:true});
+        const snap=await ref.get();
+        await saveCallToChat({...callSnapshotFallback(snap.data(),payload),status:"ended",endedAt},"ended");
+      }catch(err){console.warn("missed call timeout",err)}
+      await endCall(true);
+    },30000);
+  }
+  catch(e){console.error("launchCall:",e);toast(e?.message?.includes("permission")||e?.name==="NotAllowedError"?"Microphone permission দিন":"কল শুরু করা যায়নি");await endCall(false)}
 
 }
 async function startCall(mode){
@@ -352,24 +409,34 @@ async function acceptCall(){
   activeCall={callId:c.callId,mode:c.mode,channel:c.channel,ref:CALLS().doc(c.callId),caller:false,groupId:c.groupId||null};watchActiveCall();
   $("callHeaderName").textContent=c.groupId?(c.callerName+" · Group call"):c.callerName;$("callHeaderAvatar").src=c.callerPhoto||avatar(users.find(u=>u.uid===c.callerUid));callUi(true);updateCallParticipants();setCallStatus("Connecting…");
   try{await setupAgora(c.mode,c.channel);setCallStatus(c.mode==="video"?"ভিডিও কল চলছে":"অডিও কল চলছে");startCallTimer(Date.now());await activeCall.ref.set({status:"accepted",acceptedBy:me.uid,acceptedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true})}
-  catch(e){console.error(e);toast("কল গ্রহণ করা যায়নি");await endCall(true)}
+  catch(e){console.error("acceptCall:",e);toast(e?.message?.includes("permission")||e?.name==="NotAllowedError"?"Microphone/Camera permission দিন":"কল গ্রহণ করা যায়নি");await endCall(false)}
 }
 async function rejectIncomingCall(){const c=incomingCall;if(!c)return;$("callInviteModal").classList.add("hidden");incomingCall=null;try{const endedAt=Date.now();await CALLS().doc(c.callId).set({status:"rejected",rejectedBy:me.uid,rejectedAt:firebase.firestore.FieldValue.serverTimestamp(),endedAt},{merge:true});await saveCallToChat({...c,status:"rejected",endedAt},"rejected")}catch(_){}}
 async function endCall(silent=false){
-  const c=activeCall;activeCall=null;
+  // Close the local call UI immediately. Do not wait for Firebase/RTDB or Agora
+  // cleanup before hiding the overlay; otherwise the End button can appear dead
+  // on a slow connection.
+  const c=activeCall;
+  activeCall=null;
   if(callUnsub){try{callUnsub()}catch(_){} callUnsub=null;}
   try{localMicTrack?.stop();localMicTrack?.close();localCamTrack?.stop();localCamTrack?.close()}catch(_){ }
   localMicTrack=localCamTrack=null;
-  try{if(agoraClient){await agoraClient.leave();agoraClient.removeAllListeners();}}catch(_){ }
-  agoraClient=null;pinnedCallParticipant=null;mutedRemoteParticipants.clear();closeCallParticipants();cleanupCallUI();incomingCall=null;
+  const client=agoraClient;
+  agoraClient=null;
+  if(client){try{client.removeAllListeners();await client.leave()}catch(e){console.warn("Agora leave:",e)} }
+  pinnedCallParticipant=null;mutedRemoteParticipants.clear();closeCallParticipants();cleanupCallUI();incomingCall=null;
+
   if(c&&!silent){
-    try{
-      const snap=await c.ref.get();
-      const current={...(snap.data()||{}),...c};
-      const endedAt=Date.now();
-      await c.ref.set({status:"ended",endedBy:me.uid,endedAt},{merge:true});
-      await saveCallToChat({...current,status:"ended",endedAt},"ended");
-    }catch(e){console.warn("endCall",e)}
+    const endedAt=Date.now();
+    // Persist the end event without blocking the UI.
+    (async()=>{
+      try{
+        const snap=await c.ref.get();
+        const current={...(snap.data()||{}),...c};
+        await c.ref.set({status:"ended",endedBy:me.uid,endedAt},{merge:true});
+        await saveCallToChat({...current,status:"ended",endedAt},"ended");
+      }catch(e){console.warn("endCall",e)}
+    })();
   }
 }
 
@@ -437,7 +504,13 @@ function watchActiveCall(){
     activeCall.lastData=c;
     if(c.status==="accepted"&&!callStartedAt){setCallStatus(c.mode==="video"?"ভিডিও কল চলছে":"অডিও কল চলছে");startCallTimer(callMillis(c.acceptedAt)||Date.now())}
     if(c.kickedUids?.map(String).includes(String(me?.uid))){toast("আপনাকে group call থেকে remove করা হয়েছে");endCall(true);return;}
-    if(c.status==="ended"||c.status==="rejected")endCall(true);
+    if(c.status==="ended"||c.status==="rejected"){
+      // Both sides write the same deterministic chat message, so the call
+      // history appears in the same conversation even when the other person
+      // ended/rejected the call.
+      saveCallToChat({...c,callId:c.callId||activeCall.callId},c.status).catch(()=>{});
+      endCall(true);
+    }
   });
 }
 
@@ -539,7 +612,13 @@ async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();c
 }
 function heartbeat(){if(!me)return;const ping=()=>USERS().doc(me.uid).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{});ping();clearInterval(heartbeat.t);heartbeat.t=setInterval(ping,30000)}
 window.addEventListener("beforeunload",()=>{if(me)USERS().doc(me.uid).set({online:false,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{})});
-function stopListeners(){listUnsubs.forEach(u=>u&&u());listUnsubs=[];closeChat()}
+function stopListeners(){
+  listUnsubs.forEach(u=>{try{u&&u()}catch(_){}});listUnsubs=[];
+  if(notificationUnsub){try{notificationUnsub()}catch(_){} notificationUnsub=null;}
+  if(callInviteUnsub){try{callInviteUnsub()}catch(_){} callInviteUnsub=null;}
+  if(callUnsub){try{callUnsub()}catch(_){} callUnsub=null;}
+  closeChat();
+}
 function startListeners(){
   stopListeners();
   listUnsubs.push(USERS().onSnapshot(s=>{users=s.docs.map(d=>({uid:d.id,...d.data()})).filter(x=>x.uid!==me.uid);saveLocal("users",users);renderPeople();renderGroups();renderChats()}));
@@ -947,34 +1026,6 @@ function updateConnectivity(){
   $("offlineBar").classList.toggle("hidden",!off);
   if(!off)deltaSync();
 }
-function installPullToRefresh(){
-  const area=$("chatPanel")||document.body,indicator=$("pullRefresh");
-  let startY=0,dist=0,tracking=false;
-  area.addEventListener("touchstart",e=>{
-    const target=$("messages");
-    if(target&&target.scrollTop<=0){startY=e.touches[0].clientY;tracking=true;dist=0}
-  },{passive:true});
-  area.addEventListener("touchmove",e=>{
-    if(!tracking)return;dist=e.touches[0].clientY-startY;
-    if(dist>0){
-      const p=Math.min(1,dist/90);
-      indicator.style.marginTop=(-48+p*54)+"px";
-      indicator.style.transform=`translateX(-50%) rotate(${p*180}deg)`;
-      indicator.classList.toggle("ready",dist>70);
-    }
-  },{passive:true});
-  area.addEventListener("touchend",async()=>{
-    if(!tracking)return;tracking=false;
-    const refresh=dist>70;indicator.classList.remove("ready");
-    if(refresh){
-      indicator.classList.add("refreshing");indicator.style.marginTop="10px";
-      await deltaSync();await new Promise(r=>setTimeout(r,250));
-      indicator.classList.remove("refreshing");
-    }
-    indicator.style.marginTop="-48px";indicator.style.transform="translateX(-50%)";dist=0;
-  });
-}
-
 const SUPPORT_EMAIL="hkshahadot24@gmail.com";
 const DEFAULT_APP_URL=window.location.href.split("#")[0];
 
@@ -1118,6 +1169,7 @@ $("logoutBtn").onclick=async()=>{
   try{
     if(uid){await USERS().doc(uid).set({online:false,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(e=>console.warn("logout presence update",e));}
   }finally{
+    stopListeners();
     try{await auth.signOut();}catch(e){console.error("signOut",e);toast("Logout করা যায়নি");return;}
     localStorage.removeItem("fm_session_uid");
     me=null;profile=null;friends=[];requests=[];sentRequests=[];users=[];groups=[];messageMap.clear();
@@ -1162,7 +1214,8 @@ $("deleteAccountBtn").onclick=confirmDeleteAccount;
 let lastKnownIncoming=0;
 function watchIncomingNotifications(){
   if(!me)return;
-  MESSAGES().where("receiverUid","==",me.uid).onSnapshot(s=>{
+  if(notificationUnsub){try{notificationUnsub()}catch(_){} notificationUnsub=null;}
+  notificationUnsub=MESSAGES().where("receiverUid","==",me.uid).onSnapshot(s=>{
     const fresh=s.docChanges().filter(c=>c.type==="added").map(c=>c.doc.data()).filter(m=>Number(m.createdAt||0)>0);
     if(!fresh.length)return;
     const newest=Math.max(...fresh.map(m=>Number(m.createdAt||0)));
@@ -1171,7 +1224,7 @@ function watchIncomingNotifications(){
       toast("নতুন message এসেছে");
     }
     lastKnownIncoming=Math.max(lastKnownIncoming,newest);
-  });
+  },e=>console.warn("message notification listener",e));
 }
 
 $("audioCallBtn").onclick=()=>startCall("audio");
@@ -1199,12 +1252,11 @@ const originalAuthHandler = auth.currentUser;
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",initAppHistory,{once:true});else initAppHistory();
 
 // ===== v4 startup hooks =====
-window.addEventListener("online",updateConnectivity);
+window.addEventListener("online",()=>{updateConnectivity();if(me){startListeners();watchIncomingNotifications();watchCallInvites();renderChats();renderPeople();renderGroups();}});
 window.addEventListener("offline",updateConnectivity);
 document.addEventListener("DOMContentLoaded",async()=>{
   try{await idbOpen()}catch(e){console.warn("IndexedDB unavailable",e)}
   updateConnectivity();
-  installPullToRefresh();
   const box=$("messages");
   if(box)box.addEventListener("scroll",()=>{
     if(box.scrollTop<90 && activeFriend&&!syncInProgress){
