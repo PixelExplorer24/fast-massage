@@ -19,7 +19,6 @@
 <body class="booting">
 <div id="offlineBar" class="offline-bar hidden"><i class="fa-solid fa-wifi"></i><span>Offline mode — saved chats are available</span></div>
 <div id="syncBar" class="sync-bar hidden"><i class="fa-solid fa-rotate"></i><span id="syncText">Syncing…</span></div>
-<div id="pullRefresh" class="pull-refresh"><i class="fa-solid fa-arrow-down"></i><span>Pull to refresh</span></div>
 <div id="toast" class="toast"></div>
 
 <section id="loginScreen" class="login-screen">
@@ -50,7 +49,6 @@
     <section id="homeView" class="view active">
       <div class="hero-head">
         <div><h2>Your chats</h2><p id="chatSummary">Realtime conversations</p></div>
-        <button id="refreshBtn" class="round-btn ghost"><i class="fa-solid fa-arrows-rotate"></i></button>
       </div>
       <div class="search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input id="chatSearch" placeholder="চ্যাট বা মানুষ খুঁজুন..."><kbd>⌘ K</kbd></div>
       <div id="chatList" class="chat-list"></div>
@@ -331,7 +329,7 @@
 </div></div>
 
 <div id="lightbox" class="lightbox hidden"><button id="closeLightbox"><i class="fa-solid fa-xmark"></i></button><img id="lightboxImg" alt=""></div>
-<script src="./assets/js/app.js?v=5"></script>
+<script src="./assets/js/app.js?v=6"></script>
 <script>
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
