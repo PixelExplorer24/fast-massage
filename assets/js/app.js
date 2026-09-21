@@ -621,15 +621,53 @@ function stopListeners(){
 }
 function startListeners(){
   stopListeners();
-  listUnsubs.push(USERS().onSnapshot(s=>{users=s.docs.map(d=>({uid:d.id,...d.data()})).filter(x=>x.uid!==me.uid);saveLocal("users",users);renderPeople();renderGroups();renderChats()}));
-  listUnsubs.push(FRIENDS().where("ownerUid","==",me.uid).onSnapshot(s=>{friends=s.docs.map(d=>({id:d.id,...d.data()}));saveLocal("friends",friends);renderPeople();renderGroups();renderChats();updateStats()}));
-  listUnsubs.push(REQUESTS().where("receiverUid","==",me.uid).onSnapshot(s=>{requests=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.status==="pending");saveLocal("requests",requests);updateRequestBadge();renderPeople()}));
-  listUnsubs.push(REQUESTS().where("senderUid","==",me.uid).onSnapshot(s=>{sentRequests=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.status==="pending");saveLocal("sentRequests",sentRequests);renderPeople()}));
-  listUnsubs.push(GROUPS().where("memberUids","array-contains",me.uid).onSnapshot(s=>{groups=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0));saveLocal("groups",groups);renderGroups();renderChats()}));
-  const mergeMessages=s=>{s.docChanges().forEach(ch=>{if(ch.type==="removed")messageMap.delete(ch.doc.id);else messageMap.set(ch.doc.id,{id:ch.doc.id,...ch.doc.data()})});cacheMessages();renderChats();updateStats();if(activeFriend)renderMessages()};
-  listUnsubs.push(MESSAGES().where("senderUid","==",me.uid).onSnapshot(mergeMessages));
-  listUnsubs.push(MESSAGES().where("receiverUid","==",me.uid).onSnapshot(mergeMessages));
-  listUnsubs.push(MESSAGES().where("groupMemberUids","array-contains",me.uid).onSnapshot(mergeMessages,()=>{}));
+  // The RTDB compatibility layer reads collection roots and filters client-side.
+  // Keep ONE realtime listener per collection so the home chat list, people list,
+  // groups and messages all update immediately without a manual refresh.
+  const safeListen=(label,collection,handler)=>{
+    try{
+      const unsub=collection.onSnapshot(handler,err=>{
+        console.warn(`${label} realtime listener`,err);
+        // Keep the cached UI alive when a transient RTDB permission/network error occurs.
+        hydrateLocalCache();
+      });
+      if(typeof unsub==="function")listUnsubs.push(unsub);
+    }catch(err){
+      console.warn(`${label} listener setup`,err);
+      hydrateLocalCache();
+    }
+  };
+
+  safeListen("users",USERS(),s=>{
+    users=s.docs.map(d=>({uid:d.id,...d.data()})).filter(x=>x.uid!==me.uid);
+    saveLocal("users",users);renderPeople();renderGroups();renderChats();
+  });
+
+  safeListen("friends",FRIENDS(),s=>{
+    friends=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.ownerUid===me.uid);
+    saveLocal("friends",friends);renderPeople();renderGroups();renderChats();updateStats();
+  });
+
+  safeListen("friendRequests",REQUESTS(),s=>{
+    const all=s.docs.map(d=>({id:d.id,...d.data()}));
+    requests=all.filter(x=>x.receiverUid===me.uid&&x.status==="pending");
+    sentRequests=all.filter(x=>x.senderUid===me.uid&&x.status==="pending");
+    saveLocal("requests",requests);saveLocal("sentRequests",sentRequests);
+    updateRequestBadge();renderPeople();
+  });
+
+  safeListen("groups",GROUPS(),s=>{
+    groups=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>(x.memberUids||[]).some(id=>String(id)===String(me.uid)))
+      .sort((a,b)=>(b.createdAt?.toMillis?.()||Number(b.createdAt)||0)-(a.createdAt?.toMillis?.()||Number(a.createdAt)||0));
+    saveLocal("groups",groups);renderGroups();renderChats();
+  });
+
+  safeListen("messages",MESSAGES(),s=>{
+    const all=s.docs.map(d=>({id:d.id,...d.data()}));
+    const mine=all.filter(m=>m.senderUid===me.uid||m.receiverUid===me.uid||(Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(id=>String(id)===String(me.uid))));
+    messageMap=new Map(mine.map(m=>[m.id,m]));
+    cacheMessages();renderChats();updateStats();if(activeFriend)renderMessages();
+  });
 }
 function cacheKey(name){return CACHE_PREFIX+name+(me?"_"+me.uid:"")}
 function saveLocal(name,value){try{localStorage.setItem(cacheKey(name),JSON.stringify(value))}catch(_){}}
