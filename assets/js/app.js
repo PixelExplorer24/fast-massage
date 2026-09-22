@@ -541,10 +541,53 @@ function installCallMessageStyles(){
 }
 installCallMessageStyles();
 
+function installChatRoomThemeStyles(){
+  if($('chatRoomThemeStyles'))return;
+  const st=document.createElement('style');st.id='chatRoomThemeStyles';st.textContent=`
+    #chatPanel{position:fixed;inset:0;isolation:isolate;overflow:hidden;background:transparent!important}
+    #chatPanel::before{
+      content:"";position:absolute;inset:-14px;z-index:-2;
+      background-image:var(--fm-chat-theme-image,none);
+      background-size:cover;background-position:center;background-repeat:no-repeat;
+      filter:blur(7px);transform:scale(1.035);opacity:.92;
+    }
+    #chatPanel::after{
+      content:"";position:absolute;inset:0;z-index:-1;
+      background:rgba(255,255,255,.18);pointer-events:none;
+    }
+    #chatPanel>*{position:relative;z-index:1}
+    html.dark #chatPanel::after{background:rgba(7,12,20,.30)}
+  `;document.head.appendChild(st);
+}
+function syncChatRoomTheme(){
+  const panel=$('chatPanel');if(!panel)return;
+  const sources=[$('homeView'),document.body,document.documentElement].filter(Boolean);
+  let bg='none';
+  for(const el of sources){
+    const value=getComputedStyle(el).backgroundImage;
+    if(value&&value!=='none'&&value.includes('url(')){bg=value;break}
+  }
+  panel.style.setProperty('--fm-chat-theme-image',bg);
+}
+installChatRoomThemeStyles();
+window.addEventListener('load',syncChatRoomTheme,{once:true});
+
 // ===== SPA back navigation =====
 // Internal screens use a hash sub-link so browser Back stays inside the app
 // instead of leaving the GitHub Pages app.
 let routeSyncing=false;
+
+(function installChatPerformanceStyles(){
+  if(document.getElementById("fm-chat-performance-css"))return;
+  const st=document.createElement("style");st.id="fm-chat-performance-css";st.textContent=`
+    .msg-img{max-width:78vw;max-height:320px;object-fit:cover;cursor:zoom-in;display:block;border-radius:12px;transition:filter .18s ease,transform .18s ease}
+    .msg-img.pending-media{filter:blur(7px);opacity:.78}
+    .msg-img.pending-media:active{filter:blur(2px)}
+    .media-action-row{display:flex;gap:6px;justify-content:flex-end;margin-top:5px}
+    .media-action-btn{border:0;border-radius:999px;padding:5px 8px;background:rgba(0,0,0,.14);color:inherit;cursor:pointer;font-size:11px}
+    .pending-file{opacity:.65}
+  `;document.head.appendChild(st);
+})();
 function viewRoute(id){return ({homeView:"home",peopleView:"people",groupsView:"groups",profileView:"profile",settingsView:"settings"})[id]||"home"}
 function routeView(route){return ({home:"homeView",people:"peopleView",groups:"groupsView",profile:"profileView",settings:"settingsView"})[route]||"homeView"}
 function currentRoute(){
@@ -696,7 +739,7 @@ function startListeners(){
       friends=cachedFriends.length?cachedFriends:(registry.length?registry:friends);
       friendsSyncReady=false;
     }
-    renderPeople();renderGroups();renderChats();updateStats();
+    renderPeople();renderGroups();renderChats();updateStats();scheduleWarmFriendChats();
   });
 
   safeListen("friendRequests",REQUESTS(),s=>{
@@ -717,7 +760,7 @@ function startListeners(){
       saveLocal("groups",groups);
     }
     const rooms=buildChatRoomCache();if(rooms.length)saveLocal("chatRooms",rooms);
-    renderGroups();renderChats();
+    renderGroups();renderChats();scheduleWarmFriendChats();
   });
 
   safeListen("messages",MESSAGES(),s=>{
@@ -1114,10 +1157,17 @@ function messageHTML(m){
   return `<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">
     ${activeFriend?.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(senderName)}</div>`:""}
     ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-    ${imgs.map(u=>`<img class="msg-img" src="${esc(u)}" onclick="showImage('${esc(u)}')">`).join("")}
+    ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img" src="${esc(mediaObjectUrls.get(u)||u)}" loading="lazy" onclick="showImage('${esc(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${esc(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${esc(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
     ${uniqueFiles.map(f=>`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
     <div class="msg-footer"><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div>${delBtn}</div>
   </div></div>`;
+}
+async function downloadMedia(url,e){
+  if(e)e.stopPropagation();
+  if(!url)return;
+  try{
+    const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener";a.download="";document.body.appendChild(a);a.click();a.remove();
+  }catch(_){window.open(url,"_blank","noopener")}
 }
 async function deleteMessage(id){
   if(!me||!id)return;
@@ -1136,8 +1186,11 @@ async function deleteMessage(id){
 }
 function renderMessages(){
   if(!activeFriend)return;
-  const arr=[...activeMessageMap.values()].sort((x,y)=>(x.createdAt?.toMillis?.()||Number(x.createdAt)||0)-(y.createdAt?.toMillis?.()||Number(y.createdAt)||0));
+  const all=[...activeMessageMap.values()].sort((x,y)=>(x.createdAt?.toMillis?.()||Number(x.createdAt)||x.createdAtMs||0)-(y.createdAt?.toMillis?.()||Number(y.createdAt)||y.createdAtMs||0));
+  const arr=all.slice(Math.max(0,all.length-activeRenderLimit));
   const box=$("messages");
+  const wasNearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<80;
+  const oldTop=box.scrollTop,oldHeight=box.scrollHeight;
   const escUrl=u=>esc(u||"");
   box.innerHTML=arr.length?arr.map(m=>{
     if(m.type==="call")return `<div class="msg-row ${m.senderUid===me.uid?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
@@ -1145,29 +1198,20 @@ function renderMessages(){
     const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
     const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
     const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
-    return`<div class="msg-row ${mine?"mine":"theirs"}"><div class="bubble">
+    return `<div class="msg-row ${mine?"mine":"theirs"}"><div class="bubble ${m.pending?"pending-message":""}">
       ${activeFriend.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(users.find(u=>u.uid===m.senderUid)?.displayName||"Member")}</div>`:""}
       ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-      ${imgs.map(u=>`<img class="msg-img" src="${escUrl(u)}" onclick="showImage('${escUrl(u)}')">`).join("")}
-      ${uniqueFiles.map(f=>`<a class="file-card" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
-      <div class="msg-time">${time(m.createdAt)}</div>
+      ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img ${m.pending?"pending-media":""}" src="${escUrl(mediaObjectUrls.get(u)||u)}" loading="lazy" onclick="showImage('${escUrl(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${escUrl(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
+      ${uniqueFiles.map(f=>`<a class="file-card ${m.pending?"pending-file":""}" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
+      <div class="msg-time">${time(m.createdAt||m.createdAtMs)}${m.pending?` <span style="opacity:.6">• uploading</span>`:""}</div>
     </div></div>`;
   }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
-  box.scrollTop=box.scrollHeight;
-}
-function subscribeChat(uid){
-  chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];
-  activeMessageMap=new Map([...messageMap.values()].filter(m=>activeFriend?.isGroup?m.groupId===uid:((m.senderUid===me.uid&&m.receiverUid===uid)||(m.senderUid===uid&&m.receiverUid===me.uid))).map(m=>[m.id,m]));
-  renderMessages();
-  const ref=MESSAGES();
-  const mergeSnap=s=>{s.docs.forEach(d=>activeMessageMap.set(d.id,{id:d.id,...d.data()}));renderMessages();};
-  if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(mergeSnap));}
-  else{
-    chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(mergeSnap));
-    chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(mergeSnap));
-  }
+  if(wasNearBottom)box.scrollTop=box.scrollHeight;
+  else if(oldHeight!==box.scrollHeight)box.scrollTop=Math.max(0,oldTop+(box.scrollHeight-oldHeight));
+  else box.scrollTop=oldTop;
 }
 async function openChat(uid){
+
   if(!me||!uid)return;
   let u=users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid);
   if(!u){
@@ -1177,13 +1221,15 @@ async function openChat(uid){
   currentConversationId=pair(me.uid,uid);
   try{await idbOpen()}catch(e){console.warn("local message store unavailable",e)}
   activeFriend=u;
+  activeRenderLimit=messagePageSize*2;
   setChatHeader(u);
+  syncChatRoomTheme();
   if(!routeSyncing)pushAppRoute("chat/"+encodeURIComponent(uid));
   $("chatPanel").classList.remove("hidden");
   document.body.style.overflow="hidden";
+  await renderLocalMessages(conversationIdFor(uid,false),messagePageSize*2);
   subscribeChat(uid);
   watchTyping();
-  renderMessages();
   // Opening a personal conversation is the explicit read action.
   if(!activeFriend.isGroup)await markConversationRead(uid);
 }
@@ -1191,7 +1237,7 @@ async function openGroupChat(groupId){
   currentConversationId=groupId;
   const g=groups.find(x=>x.id===groupId);if(!g)return toast("গ্রুপ পাওয়া যায়নি");
   if(!(g.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
-  await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};setChatHeader(activeFriend);if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();await renderMessages()
+  await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};activeRenderLimit=messagePageSize*2;setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";await renderLocalMessages(conversationIdFor(groupId,true),messagePageSize*2);subscribeChat(groupId);watchTyping()
 }
 function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];renderUploadQueue();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
 function watchTyping(){if(typingUnsub)typingUnsub();if(!activeFriend||activeFriend.isGroup){$("typing").classList.add("hidden");return}typingUnsub=USERS().doc(activeFriend.uid).onSnapshot(s=>{$("typing").classList.toggle("hidden",(s.data()||{}).typingTo!==me.uid)})}
@@ -1225,31 +1271,41 @@ async function sendMessage(e){
   e.preventDefault();if(!activeFriend||!me)return;
   const input=$("messageInput"),text=input.value.trim();
   if(!text&&!attachedImages.length&&!attachedFiles.length)return;
-  if(!activeFriend.isGroup && !isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ হতে হবে, তারপর message পাঠাতে পারবেন");
-  if(activeFriend.isGroup && !(activeFriend.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
+  if(!activeFriend.isGroup&&!isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ হতে হবে, তারপর message পাঠাতে পারবেন");
+  if(activeFriend.isGroup&&!(activeFriend.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
   const btn=document.querySelector(".send-btn");btn.disabled=true;
-  try{
-    const imageUrls=[];
-    for(const f of attachedImages){
-      toast("ছবি আপলোড হচ্ছে…");
-      imageUrls.push(await uploadImage(f));
+  const imageFiles=[...attachedImages],fileFiles=[...attachedFiles];
+  const localId="local_"+Date.now()+"_"+Math.random().toString(36).slice(2);
+  const imageUrls=imageFiles.map(f=>URL.createObjectURL(f));
+  const optimistic={id:localId,senderUid:me.uid,text,imageUrls,files:fileFiles.map(f=>({name:f.name,size:f.size,mimetype:f.type,downloadPage:"",pending:true})),createdAtMs:Date.now(),createdAt:new Date().toISOString(),pending:true,conversationId:conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)};
+  activeMessageMap.set(localId,optimistic);messageMap.set(localId,optimistic);await idbPutMessages([optimistic]).catch(()=>{});
+  input.value="";input.style.height="auto";attachedImages=[];attachedFiles=[];renderUploadQueue();renderMessages();
+  // Keep keyboard open/focus immediately; upload continues in the background.
+  requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){input.focus()}});
+  (async()=>{
+    try{
+      const uploadedImages=[];
+      for(const f of imageFiles)uploadedImages.push(await uploadImage(f));
+      const fileDatas=[];
+      for(const f of fileFiles)fileDatas.push(await uploadFile(f));
+      const firstFile=fileDatas[0]||null;
+      const payload={senderUid:me.uid,text,imageUrls:uploadedImages,imageUrl:uploadedImages[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
+      if(activeFriend.isGroup){payload.groupId=activeFriend.uid;payload.groupMemberUids=activeFriend.memberUids||[];payload.groupMemberMap=Object.fromEntries((activeFriend.memberUids||[]).map(x=>[String(x),true]));}
+      else payload.receiverUid=activeFriend.uid;
+      const ref=await MESSAGES().add(payload);
+      activeMessageMap.delete(localId);messageMap.delete(localId);
+      const saved={id:ref.id,...payload,createdAtMs:Date.now(),pending:false,conversationId:conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)};
+      messageMap.set(ref.id,saved);activeMessageMap.set(ref.id,saved);await idbPutMessages([saved]).catch(()=>{});cacheMessages();renderMessages();
+      toast("Message sent");
+    }catch(err){
+      console.error("sendMessage",err);
+      const failed=activeMessageMap.get(localId);if(failed){failed.pendingFailed=true;failed.pending=false;renderMessages()}
+      toast(err.message==="Failed to fetch"?"Upload service blocked or offline":"Message পাঠানো যায়নি");
+    }finally{
+      btn.disabled=false;
+      requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){input.focus()}});
     }
-    const fileDatas=[];
-    for(const f of attachedFiles){
-      toast("ফাইল আপলোড হচ্ছে…");
-      fileDatas.push(await uploadFile(f));
-    }
-    const firstFile=fileDatas[0]||null;
-    const payload={senderUid:me.uid,text,imageUrls,imageUrl:imageUrls[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
-    if(activeFriend.isGroup){payload.groupId=activeFriend.uid;payload.groupMemberUids=activeFriend.memberUids||[];payload.groupMemberMap=Object.fromEntries((activeFriend.memberUids||[]).map(x=>[String(x),true]));}else payload.receiverUid=activeFriend.uid;
-    await MESSAGES().add(payload);
-    input.value="";input.style.height="auto";
-    attachedImages=[];attachedFiles=[];
-    renderUploadQueue();toast("Message sent");
-  }catch(err){
-    console.error(err);
-    toast(err.message==="Failed to fetch"?"Upload service blocked or offline":(err.message||"Message পাঠানো যায়নি"));
-  }finally{btn.disabled=false;input.focus()}
+  })();
 }
 function handleTyping(){if(!activeFriend||activeFriend.isGroup)return;clearTimeout(typingTimer);USERS().doc(me.uid).set({typingTo:activeFriend.uid,typingAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{});typingTimer=setTimeout(()=>USERS().doc(me.uid).set({typingTo:null},{merge:true}).catch(()=>{}),1200)}
 async function saveProfile(){const name=$("editName").value.trim();if(!name)return;try{const photo=$("editPhoto").value.trim()||null,bio=$("editBio").value.trim();await USERS().doc(me.uid).set({displayName:name,photoURL:photo,bio,profileUpdatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});profile={...profile,displayName:name,photoURL:photo,bio};syncProfile();closeAllModals();toast("Profile updated")}catch(e){toast("Profile save হয়নি")}}
@@ -1258,13 +1314,17 @@ async function saveProfile(){const name=$("editName").value.trim();if(!name)retu
 
 // ===== v4 Offline-first data layer =====
 const FM_DB_NAME="fast-messenger-local";
-const FM_DB_VERSION=1;
-const FM_STORES={messages:"messages",meta:"meta"};
+const FM_DB_VERSION=2;
+const FM_STORES={messages:"messages",meta:"meta",media:"media"};
 let fmDB=null;
 let currentConversationId=null;
 let messagePageSize=25;
 let oldestLoadedCreatedAt=0;
 let syncInProgress=false;
+let historyPrefetchBusy=false;
+let historyLoadBusy=false;
+let initialChatWarmStarted=false;
+let activeRenderLimit=50;
 
 function idbOpen(){
   return new Promise((resolve,reject)=>{
@@ -1275,6 +1335,7 @@ function idbOpen(){
       const ms=db.createObjectStore(FM_STORES.messages,{keyPath:"id"});
       ms.createIndex("conversationCreatedAt",["conversationId","createdAtMs"],{unique:false});
       db.createObjectStore(FM_STORES.meta,{keyPath:"key"});
+      if(!db.objectStoreNames.contains(FM_STORES.media))db.createObjectStore(FM_STORES.media,{keyPath:"key"});
     };
     req.onsuccess=()=>{fmDB=req.result;resolve(fmDB)};
     req.onerror=()=>reject(req.error);
@@ -1319,6 +1380,111 @@ async function idbPutMessages(items){
   });
 }
 async function idbSetMeta(key,value){return idbPut(FM_STORES.meta,{key,value})}
+async function idbGetAll(store){
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(store,"readonly"),req=tx.objectStore(store).getAll();
+    req.onsuccess=()=>resolve(req.result||[]);req.onerror=()=>reject(req.error);
+  });
+}
+async function idbPutMedia(key,blob,mime=""){
+  if(!key||!blob)return;
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(FM_STORES.media,"readwrite");
+    tx.objectStore(FM_STORES.media).put({key,blob,mime,updatedAt:Date.now()});
+    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });
+}
+async function idbGetMedia(key){
+  if(!key)return null;
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(FM_STORES.media,"readonly"),req=tx.objectStore(FM_STORES.media).get(key);
+    req.onsuccess=()=>resolve(req.result||null);req.onerror=()=>reject(req.error);
+  });
+}
+const mediaObjectUrls=new Map();
+async function cachedMediaUrl(url,preload=false){
+  if(!url)return "";
+  if(mediaObjectUrls.has(url))return mediaObjectUrls.get(url);
+  try{
+    const cached=await idbGetMedia(url);
+    if(cached?.blob){const u=URL.createObjectURL(cached.blob);mediaObjectUrls.set(url,u);return u;}
+  }catch(e){console.warn("media cache read",e)}
+  if(preload&&navigator.onLine){
+    try{
+      const r=await fetch(url,{mode:"cors",cache:"force-cache"});
+      if(r.ok){const b=await r.blob();await idbPutMedia(url,b,b.type);const u=URL.createObjectURL(b);mediaObjectUrls.set(url,u);return u;}
+    }catch(e){/* keep remote URL fallback */}
+  }
+  return url;
+}
+async function preloadMessageMedia(items){
+  const urls=[];
+  (items||[]).forEach(m=>{
+    (Array.isArray(m.imageUrls)?m.imageUrls:[]).forEach(u=>u&&urls.push(u));
+  });
+  const unique=[...new Set(urls)];
+  const concurrency=3;
+  let index=0;
+  const worker=async()=>{while(index<unique.length){const u=unique[index++];await cachedMediaUrl(u,true).catch(()=>{});}};
+  await Promise.all(Array.from({length:Math.min(concurrency,unique.length)},worker));
+}
+function conversationIdFor(uid,isGroup=false){return isGroup?String(uid):pair(me.uid,uid)}
+function localMessagesFor(uid,isGroup=false){const cid=conversationIdFor(uid,isGroup);return [...messageMap.values()].filter(m=>normalizeLocalMessage(m).conversationId===cid)}
+async function remotePersonalMessages(uid,limit=50,beforeMs=Infinity){
+  if(!navigator.onLine||!me)return [];
+  const [a,b]=await Promise.all([
+    MESSAGES().where("senderUid","==",me.uid).where("receiverUid","==",uid).limit(limit).get(),
+    MESSAGES().where("senderUid","==",uid).where("receiverUid","==",me.uid).limit(limit).get()
+  ]);
+  const map=new Map();[...a.docs,...b.docs].forEach(d=>map.set(d.id,{id:d.id,...d.data()}));
+  return [...map.values()].filter(m=>{
+    const t=m.createdAt?.toMillis?.()||m.createdAtMs||0;return t<(Number.isFinite(beforeMs)?beforeMs:Infinity);
+  }).sort((x,y)=>(y.createdAt?.toMillis?.()||y.createdAtMs||0)-(x.createdAt?.toMillis?.()||x.createdAtMs||0)).slice(0,limit);
+}
+async function remoteGroupMessages(groupId,limit=50,beforeMs=Infinity){
+  if(!navigator.onLine)return [];
+  const s=await MESSAGES().where("groupId","==",groupId).limit(limit).get();
+  return s.docs.map(d=>({id:d.id,...d.data()})).filter(m=>{
+    const t=m.createdAt?.toMillis?.()||m.createdAtMs||0;return t<(Number.isFinite(beforeMs)?beforeMs:Infinity);
+  }).sort((x,y)=>(y.createdAt?.toMillis?.()||y.createdAtMs||0)-(x.createdAt?.toMillis?.()||x.createdAtMs||0));
+}
+async function fetchConversationPage(uid,isGroup,limit=25,beforeMs=Infinity){
+  const items=isGroup?await remoteGroupMessages(uid,limit,beforeMs):await remotePersonalMessages(uid,limit,beforeMs);
+  if(items.length){await idbPutMessages(items);items.forEach(m=>messageMap.set(m.id,m));}
+  await preloadMessageMedia(items);
+  return items.sort((a,b)=>(a.createdAt?.toMillis?.()||a.createdAtMs||0)-(b.createdAt?.toMillis?.()||b.createdAtMs||0));
+}
+let warmChatTimer=null;
+function scheduleWarmFriendChats(){
+  if(warmChatTimer)clearTimeout(warmChatTimer);
+  warmChatTimer=setTimeout(()=>{warmFriendChats().catch(e=>console.warn("warm chat cache",e))},300);
+}
+async function warmFriendChats(){
+  if(!me||!navigator.onLine)return;
+  const targets=[...friends.map(f=>({uid:f.friendUid,isGroup:false})),...groups.map(g=>({uid:g.id,isGroup:true}))];
+  const concurrency=2;let index=0;
+  const worker=async()=>{while(index<targets.length){const t=targets[index++];try{const cid=conversationIdFor(t.uid,t.isGroup);const newest=await fetchConversationPage(t.uid,t.isGroup,messagePageSize*2,Infinity);await idbSetMeta("warm_"+cid,{at:Date.now(),oldest:newest[0]?.createdAtMs||newest[0]?.createdAt?.toMillis?.()||0});}catch(e){console.warn("warm chat cache",t.uid,e)}}};
+  await Promise.all(Array.from({length:Math.min(concurrency,targets.length)},worker));
+  if(activeFriend)await renderLocalMessages(conversationIdFor(activeFriend.uid,activeFriend.isGroup),messagePageSize*2);
+}
+async function prefetchNextPages(uid,isGroup,beforeMs){
+  if(!navigator.onLine||!beforeMs)return;
+  try{
+    const items=await fetchConversationPage(uid,isGroup,messagePageSize*3,beforeMs);
+    if(items.length)await idbSetMeta("prefetch_"+conversationIdFor(uid,isGroup),{at:Date.now(),oldest:items[0].createdAtMs||items[0].createdAt?.toMillis?.()||0});
+  }catch(e){console.warn("prefetch chat history",e)}
+}
+function triggerHistoryPrefetch(){
+  if(!activeFriend||!oldestLoadedCreatedAt||historyPrefetchBusy)return;
+  const loadedCount=document.querySelectorAll("#messages .msg-row").length;
+  if(loadedCount<=messagePageSize*2)return;
+  historyPrefetchBusy=true;
+  prefetchNextPages(activeFriend.uid,!!activeFriend.isGroup,oldestLoadedCreatedAt).finally(()=>historyPrefetchBusy=false);
+}
+
 async function idbGetMeta(key){const x=await idbGet(FM_STORES.meta,key);return x?.value}
 function normalizeLocalMessage(m){
   return {...m,
@@ -1331,30 +1497,43 @@ async function cacheSnapshotMessages(snapshot){
   await idbPutMessages(items);
   return items;
 }
-async function renderLocalMessages(conversationId,limit=25,beforeMs=Infinity){
+async function renderLocalMessages(conversationId,limit=25,beforeMs=Infinity,keepPosition=false){
   const local=await idbMessages(conversationId,limit,beforeMs);
   if(conversationId!==currentConversationId)return local;
   oldestLoadedCreatedAt=local.length?local[0].createdAtMs:0;
-  renderMessagesFromPlain(local);
+  if(local.length)await preloadMessageMedia(local).catch(()=>{});
+  renderMessagesFromPlain(local,keepPosition);
   return local;
 }
-function renderMessagesFromPlain(items){
+function renderMessagesFromPlain(items,keepPosition=false){
   const box=$("messages");if(!box)return;
+  const oldHeight=box.scrollHeight,oldTop=box.scrollTop;
   if(!items.length){
     box.innerHTML='<div class="empty-state"><i class="fa-regular fa-comments"></i><b>No messages yet</b><span>Start the conversation.</span></div>';
     return;
   }
   box.innerHTML=items.map(m=>messageHTML(m)).join("");
-  box.scrollTop=box.scrollHeight;
+  if(keepPosition)box.scrollTop=Math.max(0,box.scrollHeight-oldHeight+oldTop);
+  else box.scrollTop=box.scrollHeight;
 }
 async function loadOlderLocalMessages(){
-  if(!currentConversationId||!oldestLoadedCreatedAt)return;
-  const older=await idbMessages(currentConversationId,messagePageSize,oldestLoadedCreatedAt-1);
-  if(!older.length){toast("No more local messages");return}
+  if(!currentConversationId||!oldestLoadedCreatedAt||historyLoadBusy)return;
+  historyLoadBusy=true;
   const box=$("messages"),oldHeight=box.scrollHeight,oldTop=box.scrollTop;
-  box.insertAdjacentHTML("afterbegin",older.map(m=>messageHTML(m)).join(""));
-  oldestLoadedCreatedAt=older[0].createdAtMs;
-  box.scrollTop=box.scrollHeight-oldHeight+oldTop;
+  try{
+    let older=await idbMessages(currentConversationId,messagePageSize,oldestLoadedCreatedAt-1);
+    if(!older.length&&navigator.onLine){
+      older=await fetchConversationPage(activeFriend.uid,!!activeFriend.isGroup,messagePageSize,oldestLoadedCreatedAt);
+    }
+    if(!older.length){toast("No more messages");return}
+    older.forEach(m=>activeMessageMap.set(m.id,m));
+    activeRenderLimit+=older.length;
+    box.insertAdjacentHTML("afterbegin",older.map(m=>messageHTML(m)).join(""));
+    oldestLoadedCreatedAt=older[0].createdAtMs||older[0].createdAt?.toMillis?.()||oldestLoadedCreatedAt;
+    box.scrollTop=box.scrollHeight-oldHeight+oldTop;
+    preloadMessageMedia(older).catch(()=>{});
+    triggerHistoryPrefetch();
+  }finally{historyLoadBusy=false}
 }
 async function deltaSync(){
   if(!me||!navigator.onLine||syncInProgress)return;
@@ -1662,7 +1841,7 @@ auth.onAuthStateChanged(async user=>{
     syncProfile();syncMenu();hydrateLocalCache();
     renderChats();
     if(typeof requestAnimationFrame==="function")requestAnimationFrame(()=>{hydrateLocalCache();syncProfile();renderChats()});
-    heartbeat();startListeners();watchIncomingNotifications();watchCallInvites();
+    heartbeat();startListeners();watchIncomingNotifications();watchCallInvites();if(!initialChatWarmStarted){initialChatWarmStarted=true;scheduleWarmFriendChats()}
     ensureUser().then(()=>saveLocal("profile",profile)).catch(e=>console.warn("profile sync delayed",e));
   }else{
     if(window.__resetGoogleLoginLoading)window.__resetGoogleLoginLoading();
@@ -1793,6 +1972,7 @@ document.addEventListener("DOMContentLoaded",async()=>{
     if(box.scrollTop<90 && activeFriend&&!syncInProgress){
       const conversationId=activeFriend.isGroup?activeFriend.uid:pair(me.uid,activeFriend.uid);
       if(conversationId&&oldestLoadedCreatedAt)loadOlderLocalMessages();
+      triggerHistoryPrefetch();
     }
   });
 });
