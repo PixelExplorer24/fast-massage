@@ -604,8 +604,19 @@ window.addEventListener("popstate",()=>{
   history.pushState({fastMessenger:true,route:"home",sentinel:true},"", "#home");
   applyAppRoute();
 });
-function syncProfile(){if(!profile)return;try{saveLocal("profile",profile)}catch(_){}const name=profile.displayName||me.displayName||me.email?.split("@")[0]||"User";$("headerAvatar").src=avatar(profile);$("profileAvatar").src=avatar(profile);$("profileName").textContent=name;$("profileEmail").textContent=profile.email||me.email||"";$("profileBio").textContent=profile.bio||"No bio added.";$("editName").value=name;$("editPhoto").value=profile.photoURL||"";$("editBio").value=profile.bio||""}
-async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();const base={uid:me.uid,displayName:me.displayName||me.email?.split("@")[0]||"User",email:me.email||"",photoURL:me.photoURL||null,lastSeen:firebase.firestore.FieldValue.serverTimestamp(),online:true};if(!snap.exists)await ref.set(base);else await ref.set({lastSeen:base.lastSeen,online:true},{merge:true});profile={...base,...(snap.exists?snap.data():{})};
+function syncProfile(){
+  if(!profile)return;
+  try{saveLocal("profile",profile)}catch(_){}
+  const name=profile.displayName||me?.displayName||me?.email?.split("@")[0]||"User";
+  $("headerAvatar").src=avatar(profile);
+  $("profileAvatar").src=avatar(profile);
+  $("profileName").textContent=name;
+  $("profileEmail").textContent=profile.email||me?.email||"";
+  $("profileBio").textContent=profile.bio||"No bio added.";
+  $("editName").value=name;
+  $("editPhoto").value=profile.photoURL||"";
+  $("editBio").value=profile.bio||"";
+}async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();const base={uid:me.uid,displayName:me.displayName||me.email?.split("@")[0]||"User",email:me.email||"",photoURL:me.photoURL||null,lastSeen:firebase.firestore.FieldValue.serverTimestamp(),online:true};if(!snap.exists)await ref.set(base);else await ref.set({lastSeen:base.lastSeen,online:true},{merge:true});profile={...base,...(snap.exists?snap.data():{})};
   const googleName=me.displayName||profile.displayName||base.displayName;
   const googlePhoto=me.photoURL||profile.photoURL||null;
   const googleEmail=me.email||profile.email||"";
@@ -651,8 +662,13 @@ function startListeners(){
   };
 
   safeListen("users",USERS(),s=>{
-    users=s.docs.map(d=>({uid:d.id,...d.data()})).filter(x=>x.uid!==me.uid);
-    saveLocal("users",users);renderPeople();renderGroups();renderChats();
+    const liveUsers=s.docs.map(d=>({uid:d.id,...d.data()})).filter(x=>x.uid!==me.uid);
+    // Do not erase a warm cache because the first realtime read can briefly be empty.
+    if(liveUsers.length>0 || users.length===0){
+      users=liveUsers;
+      saveLocal("users",users);
+    }
+    renderPeople();renderGroups();renderChats();
   });
 
   safeListen("friends",FRIENDS(),s=>{
@@ -684,10 +700,14 @@ function startListeners(){
   });
 
   safeListen("groups",GROUPS(),s=>{
-    groups=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>(x.memberUids||[]).some(id=>String(id)===String(me.uid)))
+    const liveGroups=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>(x.memberUids||[]).some(id=>String(id)===String(me.uid)))
       .sort((a,b)=>(b.createdAt?.toMillis?.()||Number(b.createdAt)||0)-(a.createdAt?.toMillis?.()||Number(a.createdAt)||0));
-    groupsSyncReady=true;
-    saveLocal("groups",groups);
+    // Keep the cached group list visible during a transient empty first snapshot.
+    if(liveGroups.length>0 || groups.length===0){
+      groups=liveGroups;
+      groupsSyncReady=true;
+      saveLocal("groups",groups);
+    }
     const rooms=buildChatRoomCache();if(rooms.length)saveLocal("chatRooms",rooms);
     renderGroups();renderChats();
   });
@@ -696,17 +716,18 @@ function startListeners(){
     const all=s.docs.map(d=>({id:d.id,...d.data()}));
     const mine=all.filter(m=>m.senderUid===me.uid||m.receiverUid===me.uid||(Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(id=>String(id)===String(me.uid))));
 
-    // Replace the message state with the complete Firebase snapshot, including
-    // the FIRST snapshot received after a page refresh.
-    messageMap=new Map(mine.map(m=>[m.id,m]));
-    messagesSyncReady=true;
+    // Keep a warm local message history if the first realtime snapshot is empty.
+    // A non-empty snapshot is authoritative and replaces the in-memory state.
+    if(mine.length>0 || messageMap.size===0){
+      messageMap=new Map(mine.map(m=>[m.id,m]));
+      messagesSyncReady=true;
+      cacheMessages();
+    }
 
-    cacheMessages();
     const rooms=buildChatRoomCache();
     if(rooms.length)saveLocal("chatRooms",rooms);
 
-    // Critical: the first Firebase snapshot must immediately paint the Home UI.
-    // Do not wait for chatSearch.oninput or another user interaction.
+    // Critical: every snapshot, including the first one, repaints the UI.
     renderChats();
     updateStats();
     if(activeFriend)renderMessages();
@@ -843,7 +864,12 @@ function buildChatRoomCache(){
   });
   return normalizeChatRooms(rooms);
 }
-function cacheMessages(){saveLocal("messages",[...messageMap.values()].slice(-800))}
+function cacheMessages(){
+  // Keep the latest 1500 messages locally, including text, images, files and call records.
+  // Media itself remains at its original URL; the message metadata/URL is available
+  // immediately on the next refresh so the UI never has to wait for Firebase to rebuild.
+  saveLocal("messages",[...messageMap.values()].slice(-1500));
+}
 function callDurationPreview(m){
   const video=m.callMode==="video",type=video?"ভিডিও কল":"অডিও কল";
   if(m.callOutcome==="completed")return `${type} · ${callDurationText(m.callDurationMs||0)}`;
@@ -1334,6 +1360,31 @@ function initPreferences(){
 }
 
 $("googleLogin").onclick=async()=>{const b=$("googleLogin");b.disabled=true;try{await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider())}catch(e){console.error(e);$("loginError").textContent=e.message||"Login failed"}finally{b.disabled=false}};
+// -----------------------------------------------------------------------------
+// Instant offline-first shell
+// -----------------------------------------------------------------------------
+// The browser can know the last authenticated UID before Firebase Auth finishes
+// restoring the session. Use that UID to paint the cached profile/chats immediately.
+// The real auth callback below replaces this temporary state with the authoritative
+// Firebase user as soon as authentication is restored.
+function preloadCachedSession(){
+  const cachedUid=localStorage.getItem("fm_session_uid");
+  if(!cachedUid)return false;
+  try{
+    me={uid:cachedUid};
+    const rawProfile=localStorage.getItem(`${CACHE_PREFIX}profile_${cachedUid}`);
+    profile=rawProfile?JSON.parse(rawProfile):null;
+    hydrateLocalCache();
+    if(profile)syncProfile();
+    syncMenu();
+    renderChats();
+    return true;
+  }catch(e){
+    console.warn("cached session preload",e);
+    return false;
+  }
+}
+
 function showCachedShell(){
   const cachedUid=localStorage.getItem("fm_session_uid");
   if(!cachedUid)return false;
@@ -1343,6 +1394,9 @@ function showCachedShell(){
   return true;
 }
 const hadCachedSession=showCachedShell();
+// Paint the last known session before Firebase Auth finishes restoring the login.
+// This removes the blank-profile / blank-chat flash on every hard refresh.
+if(hadCachedSession)preloadCachedSession();
 
 auth.onAuthStateChanged(async user=>{
   authResolved=true;
@@ -1351,9 +1405,10 @@ auth.onAuthStateChanged(async user=>{
     $("loginScreen").classList.add("hidden");$("app").classList.remove("hidden");
     document.body.classList.remove("booting");
     profile=loadLocal("profile",{uid:user.uid,displayName:user.displayName||user.email?.split("@")[0]||"User",email:user.email||"",photoURL:user.photoURL||null,bio:"Fast Messenger profile"});
+    // Restore every cached collection before any Firebase listener starts.
     syncProfile();syncMenu();hydrateLocalCache();
-    // Render the persisted Home rooms immediately, before Firebase reconnects.
-    if(typeof requestAnimationFrame==="function")requestAnimationFrame(()=>{hydrateLocalCache();renderChats()});
+    renderChats();
+    if(typeof requestAnimationFrame==="function")requestAnimationFrame(()=>{hydrateLocalCache();syncProfile();renderChats()});
     heartbeat();startListeners();watchIncomingNotifications();watchCallInvites();
     ensureUser().then(()=>saveLocal("profile",profile)).catch(e=>console.warn("profile sync delayed",e));
   }else{
