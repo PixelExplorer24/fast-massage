@@ -81,12 +81,13 @@ class RTCollection{
   onSnapshot(cb,err){return new RTQuery(this.path,[]).onSnapshot(cb,err)}
 }
 class RTQuery{
-  constructor(path,filters=[]){this.path=path;this.filters=[...filters]}
-  where(field,op,value){return new RTQuery(this.path,[...this.filters,{field,op,value}])}
+  constructor(path,filters=[],limit=null){this.path=path;this.filters=[...filters];this._limit=limit}
+  where(field,op,value){return new RTQuery(this.path,[...this.filters,{field,op,value}],this._limit)}
+  limit(n){return new RTQuery(this.path,this.filters,Math.max(1,Number(n)||1))}
   _match(obj){return this.filters.every(f=>{const a=obj?.[f.field],b=f.value;switch(f.op){case "==":return a===b;case ">":return rtdbToMillis(a)>rtdbToMillis(b);case ">=":return rtdbToMillis(a)>=rtdbToMillis(b);case "<":return rtdbToMillis(a)<rtdbToMillis(b);case "<=":return rtdbToMillis(a)<=rtdbToMillis(b);case "array-contains":return Array.isArray(a)&&a.some(x=>String(x)===String(b));default:return false}})}
-  async _read(){const snap=await db.ref(this.path).once("value");const raw=snap.val()||{};return Object.entries(raw).filter(([,v])=>v&&this._match(v)).map(([id,v])=>new RTDocSnap(id,v))}
+  async _read(){const snap=await db.ref(this.path).once("value");const raw=snap.val()||{};let rows=Object.entries(raw).filter(([,v])=>v&&this._match(v));rows.sort((a,b)=>{const av=rtdbToMillis(a[1]?.createdAt??a[1]?.createdAtMs??0),bv=rtdbToMillis(b[1]?.createdAt??b[1]?.createdAtMs??0);return bv-av});if(this._limit!=null)rows=rows.slice(0,this._limit);return rows.map(([id,v])=>new RTDocSnap(id,v))}
   async get(){return new RTQuerySnap(await this._read())}
-  onSnapshot(cb,err){let previous=new Map(),first=true;const r=db.ref(this.path);const fn=async snap=>{try{const raw=snap.val()||{};const current=new Map(Object.entries(raw).filter(([,v])=>v&&this._match(v)));const changes=[];for(const [id,v] of current){if(!previous.has(id))changes.push({type:"added",doc:new RTDocSnap(id,v)});else if(JSON.stringify(previous.get(id))!==JSON.stringify(v))changes.push({type:"modified",doc:new RTDocSnap(id,v)})}for(const [id,v] of previous)if(!current.has(id))changes.push({type:"removed",doc:new RTDocSnap(id,v)});const docs=[...current.entries()].map(([id,v])=>new RTDocSnap(id,v));previous=current;cb(new RTQuerySnap(docs,first?docs.map(d=>({type:"added",doc:d})):changes));first=false}catch(e){err?.(e)}};r.on("value",fn,e=>err?.(e));return()=>r.off("value",fn)}
+  onSnapshot(cb,err){let previous=new Map(),first=true;const r=db.ref(this.path);const fn=async snap=>{try{const raw=snap.val()||{};let rows=Object.entries(raw).filter(([,v])=>v&&this._match(v));rows.sort((a,b)=>{const av=rtdbToMillis(a[1]?.createdAt??a[1]?.createdAtMs??0),bv=rtdbToMillis(b[1]?.createdAt??b[1]?.createdAtMs??0);return bv-av});if(this._limit!=null)rows=rows.slice(0,this._limit);const current=new Map(rows);const changes=[];for(const [id,v] of current){if(!previous.has(id))changes.push({type:"added",doc:new RTDocSnap(id,v)});else if(JSON.stringify(previous.get(id))!==JSON.stringify(v))changes.push({type:"modified",doc:new RTDocSnap(id,v)})}for(const [id,v] of previous)if(!current.has(id))changes.push({type:"removed",doc:new RTDocSnap(id,v)});const docs=[...current.entries()].map(([id,v])=>new RTDocSnap(id,v));previous=current;cb(new RTQuerySnap(docs,first?docs.map(d=>({type:"added",doc:d})):changes));first=false}catch(e){err?.(e)}};r.on("value",fn,e=>err?.(e));return()=>r.off("value",fn)}
 }
 class RTBatch{
   constructor(){this.ops=[]}
@@ -585,7 +586,7 @@ let routeSyncing=false;
     .msg-img.pending-media:active{filter:blur(2px)}
     .media-action-row{display:flex;gap:6px;justify-content:flex-end;margin-top:5px}
     .media-action-btn{border:0;border-radius:999px;padding:5px 8px;background:rgba(0,0,0,.14);color:inherit;cursor:pointer;font-size:11px}
-    .pending-file{opacity:.65}\n    .sending-message{opacity:.92}\n    .failed-message{opacity:.9}\n    .media-wrap{contain:layout paint;content-visibility:auto}\n    .msg-img{will-change:transform;user-select:none;-webkit-user-drag:none}\n    .file-card.pending-file{pointer-events:none}\n    #lightboxImg{touch-action:none;transition:transform .12s ease;max-width:92vw;max-height:82vh}
+    .pending-file{opacity:.65}
   `;document.head.appendChild(st);
 })();
 function viewRoute(id){return ({homeView:"home",peopleView:"people",groupsView:"groups",profileView:"profile",settingsView:"settings"})[id]||"home"}
@@ -678,6 +679,7 @@ function stopListeners(){
 }
 function startListeners(){
   stopListeners();
+  if(initialChatWarmUserKey!==String(me?.uid||"")){initialChatWarmStarted=false;initialChatWarmUserKey=String(me?.uid||"")}
   friendsSyncReady=false;groupsSyncReady=false;messagesSyncReady=false;
 
   // Always render the Home chat list immediately from the current in-memory/local
@@ -1145,12 +1147,38 @@ function setChatHeader(u){
 window.openUser=uid=>{const u=users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid);if(!u)return;$("userModalAvatar").src=avatar(u);$("userModalName").textContent=u.displayName||"User";$("userModalEmail").textContent=u.email||"";$("userModalBio").textContent=u.bio||"No bio added.";$("userModalChat").onclick=()=>{closeAllModals();openChat(uid)};$("userModal").classList.remove("hidden")};
 
 function subscribeChat(uid){
-  chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];
-  const ref=MESSAGES(),repaint=()=>{if(activeFriend)renderMessages()};
-  if(activeFriend?.isGroup)chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(repaint));
-  else{
-    chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(repaint));
-    chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(repaint));
+  chatUnsubs.forEach(u=>u&&u());
+  chatUnsubs=[];
+  const ref=MESSAGES();
+  const applySnapshot=(snap)=>{
+    if(!activeFriend)return;
+    const incoming=snap.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()}));
+    let changed=false;
+    incoming.forEach(m=>{
+      const belongs=activeFriend.isGroup
+        ? String(m.groupId)===String(activeFriend.uid)
+        : ((String(m.senderUid)===String(me.uid)&&String(m.receiverUid)===String(uid)) || (String(m.senderUid)===String(uid)&&String(m.receiverUid)===String(me.uid)));
+      if(!belongs)return;
+      const old=activeMessageMap.get(m.id)||messageMap.get(m.id);
+      if(!old || JSON.stringify(old)!==JSON.stringify(m)){
+        activeMessageMap.set(m.id,m);
+        messageMap.set(m.id,m);
+        changed=true;
+      }
+    });
+    if(changed){
+      idbPutMessages(incoming).catch(()=>{});
+      cacheMessages();
+      renderMessages();
+      renderChats();
+      preloadMessageMedia(incoming).then(()=>{if(activeFriend)renderMessages()}).catch(()=>{});
+    }
+  };
+  if(activeFriend?.isGroup){
+    chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(applySnapshot));
+  }else{
+    chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(applySnapshot));
+    chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(applySnapshot));
   }
 }
 function messageHTML(m){
@@ -1159,14 +1187,14 @@ function messageHTML(m){
   const imgs=Array.isArray(m.imageUrls)?m.imageUrls:[];
   const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
   const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
-  const uniqueFiles=files.filter((f,i,a)=>((f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i)||(!f.downloadPage&&f.pending&&a.findIndex(x=>!x.downloadPage&&x.name===f.name&&x.size===f.size)===i)));
+  const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
   const senderName=users.find(u=>String(u.uid)===String(m.senderUid))?.displayName||"Member";
   const delBtn=`<button class="msg-delete-btn" type="button" title="Delete message" onclick="deleteMessage('${esc(m.id||'')}')"><i class="fa-solid fa-trash-can"></i></button>`;
   return `<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">
     ${activeFriend?.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(senderName)}</div>`:""}
     ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-    ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img" data-media-url="${esc(u)}" src="${esc(mediaObjectUrls.get(u)||u)}" loading="lazy" decoding="async" onclick="showImage('${esc(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${esc(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${esc(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
-    ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")} · uploading…</small></span></div>`).join("")}
+    ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img" src="${esc(mediaObjectUrls.get(u)||u)}" loading="lazy" onclick="showImage('${esc(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${esc(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${esc(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
+    ${uniqueFiles.map(f=>`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
     <div class="msg-footer"><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div>${delBtn}</div>
   </div></div>`;
 }
@@ -1197,23 +1225,10 @@ function renderMessages(){
   const all=[...activeMessageMap.values()].sort((x,y)=>(x.createdAt?.toMillis?.()||Number(x.createdAt)||x.createdAtMs||0)-(y.createdAt?.toMillis?.()||Number(y.createdAt)||y.createdAtMs||0));
   const arr=all.slice(Math.max(0,all.length-activeRenderLimit));
   const box=$("messages");
+  if(!box)return;
   const wasNearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<80;
   const oldTop=box.scrollTop,oldHeight=box.scrollHeight;
-  const escUrl=u=>esc(u||"");
-  box.innerHTML=arr.length?arr.map(m=>{
-    if(m.type==="call")return `<div class="msg-row ${m.senderUid===me.uid?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
-    const mine=m.senderUid===me.uid,imgs=m.imageUrls||[];
-    const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
-    const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
-    const uniqueFiles=files.filter((f,i,a)=>((f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i)||(!f.downloadPage&&f.pending&&a.findIndex(x=>!x.downloadPage&&x.name===f.name&&x.size===f.size)===i)));
-    return `<div class="msg-row ${mine?"mine":"theirs"}"><div class="bubble ${m.pending?"pending-message":m.pendingSend?"sending-message":m.pendingFailed?"failed-message":""}">
-      ${activeFriend.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(users.find(u=>u.uid===m.senderUid)?.displayName||"Member")}</div>`:""}
-      ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-      ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img ${m.pending?"pending-media":""}" data-media-url="${escUrl(u)}" src="${escUrl(mediaObjectUrls.get(u)||u)}" loading="lazy" decoding="async" onclick="showImage('${escUrl(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${escUrl(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
-      ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card ${m.pending?"pending-file":""}" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")} · uploading…</small></span></div>`).join("")}
-      <div class="msg-time">${time(m.createdAt||m.createdAtMs)}${m.pending?` <span style="opacity:.6">• uploading…</span>`:(m.pendingSend?` <span style="opacity:.6">• sending…</span>`:(m.pendingFailed?` <span style="opacity:.75">• failed</span>`:""))}</div>
-    </div></div>`;
-  }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
+  box.innerHTML=arr.length?arr.map(m=>messageHTML(m)).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
   if(wasNearBottom)box.scrollTop=box.scrollHeight;
   else if(oldHeight!==box.scrollHeight)box.scrollTop=Math.max(0,oldTop+(box.scrollHeight-oldHeight));
   else box.scrollTop=oldTop;
@@ -1229,6 +1244,7 @@ async function openChat(uid){
   currentConversationId=pair(me.uid,uid);
   try{await idbOpen()}catch(e){console.warn("local message store unavailable",e)}
   activeFriend=u;
+  historyPrefetchKey="";
   activeRenderLimit=messagePageSize*2;
   setChatHeader(u);
   syncChatRoomTheme();
@@ -1245,28 +1261,18 @@ async function openGroupChat(groupId){
   currentConversationId=groupId;
   const g=groups.find(x=>x.id===groupId);if(!g)return toast("গ্রুপ পাওয়া যায়নি");
   if(!(g.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
-  await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};activeRenderLimit=messagePageSize*2;setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";await renderLocalMessages(conversationIdFor(groupId,true),messagePageSize*2);subscribeChat(groupId);watchTyping()
+  await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};historyPrefetchKey="";activeRenderLimit=messagePageSize*2;setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";await renderLocalMessages(conversationIdFor(groupId,true),messagePageSize*2);subscribeChat(groupId);watchTyping()
 }
 function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];renderUploadQueue();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
 function watchTyping(){if(typingUnsub)typingUnsub();if(!activeFriend||activeFriend.isGroup){$("typing").classList.add("hidden");return}typingUnsub=USERS().doc(activeFriend.uid).onSnapshot(s=>{$("typing").classList.toggle("hidden",(s.data()||{}).typingTo!==me.uid)})}
 
-async function uploadImage(file,onProgress){
-  if(file.size>32*1024*1024)throw new Error("Image 32MB-এর বেশি হতে পারবে না");
-  const fd=new FormData();
-  fd.append("image",file);
-  const r=await fetch(`https://api.imgbb.com/1/upload?key=${IMAGE_UPLOAD_KEY}`,{method:"POST",body:fd});
-  const j=await r.json().catch(()=>null);
-  if(!r.ok||!j?.success||!j?.data?.url)throw new Error("ImgBB upload failed");
-  if(onProgress)onProgress(100);
-  return j.data.url;
-}
+async function uploadImage(file,onProgress){if(file.size>32*1024*1024)throw new Error("Image 32MB-এর বেশি হতে পারবে না");const fd=new FormData();fd.append("image",file);const r=await fetch(`https://api.imgbb.com/1/upload?key=${IMAGE_UPLOAD_KEY}`,{method:"POST",body:fd});const j=await r.json();if(!j.success)throw new Error("ছবি আপলোড করা যায়নি");if(onProgress)onProgress(100);return j.data.url}
 
 async function uploadFile(file,onProgress){
-  const fd=new FormData();
-  fd.append("file",file);
+  const fd=new FormData();fd.append("file",file);
   const r=await fetch(FILE_UPLOAD_ENDPOINT,{method:"POST",body:fd});
   const j=await r.json().catch(()=>null);
-  if(!r.ok||!j||j.status!=="ok")throw new Error(j?.status||"GoFile upload failed");
+  if(!r.ok||!j||j.status!=="ok")throw new Error(j?.status||"ফাইল আপলোড করা যায়নি");
   if(onProgress)onProgress(100);
   return j.data;
 }
@@ -1285,164 +1291,48 @@ function renderUploadQueue(){
     <span class="queue-copy"><b>${esc(x.f.name)}</b><small>${bytes(x.f.size)}</small><span class="progress"><i></i></span></span>
   </div>`).join("");
 }
-const URLS_FOR_OPTIMISTIC=new Map();
-async function cacheOptimisticMedia(localId,files){
-  if(!files?.length)return;
-  try{
-    await Promise.all(files.map(async(file,index)=>{
-      const key=`optimistic:${localId}:${index}:${file.name}:${file.size}`;
-      await idbPutMedia(key,file,file.type||"");
-    }));
-  }catch(e){console.warn("optimistic media cache",e)}
-}
-function focusMessageInput(){
-  const input=$("messageInput");
-  if(!input)return;
-  requestAnimationFrame(()=>{
-    try{input.focus({preventScroll:true})}catch(_){try{input.focus()}catch(__){}}
-  });
-}
-function withTimeout(promise,ms,label="Operation timed out"){
-  return Promise.race([
-    promise,
-    new Promise((_,reject)=>setTimeout(()=>reject(new Error(label)),ms))
-  ]);
-}
-async function saveMessageToBackend(payload,timeoutMs=15000){
-  // MESSAGES() is the app's existing Firestore-style message data layer.
-  return withTimeout(MESSAGES().add(payload),timeoutMs,"Message save timed out");
-}
 async function sendMessage(e){
-  e.preventDefault();
-  if(!activeFriend||!me)return;
+  e.preventDefault();if(!activeFriend||!me)return;
   const input=$("messageInput"),text=input.value.trim();
-  const imageFiles=[...attachedImages],fileFiles=[...attachedFiles];
-  if(!text&&!imageFiles.length&&!fileFiles.length)return;
+  if(!text&&!attachedImages.length&&!attachedFiles.length)return;
   if(!activeFriend.isGroup&&!isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ হতে হবে, তারপর message পাঠাতে পারবেন");
   if(activeFriend.isGroup&&!(activeFriend.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
-
-  const target={...activeFriend,memberUids:[...(activeFriend.memberUids||[])]};
-  const hasMedia=imageFiles.length>0||fileFiles.length>0;
+  const btn=document.querySelector(".send-btn");btn.disabled=true;
+  const imageFiles=[...attachedImages],fileFiles=[...attachedFiles];
   const localId="local_"+Date.now()+"_"+Math.random().toString(36).slice(2);
-  const conversationId=conversationIdFor(target.uid,!!target.isGroup);
   const imageUrls=imageFiles.map(f=>URL.createObjectURL(f));
-  URLS_FOR_OPTIMISTIC.set(localId,imageUrls);
-
-  // IMPORTANT: text-only messages are NOT upload jobs.
-  // Keep separate states so a plain text bubble never says "uploading".
-  const optimistic={
-    id:localId,
-    senderUid:me.uid,
-    text,
-    imageUrls,
-    files:fileFiles.map(f=>({name:f.name,size:f.size,mimetype:f.type,downloadPage:"",pending:true})),
-    createdAtMs:Date.now(),
-    createdAt:new Date().toISOString(),
-    pending:hasMedia,
-    pendingSend:!hasMedia,
-    pendingFailed:false,
-    conversationId
-  };
-  activeMessageMap.set(localId,optimistic);
-  messageMap.set(localId,optimistic);
+  const optimistic={id:localId,senderUid:me.uid,text,imageUrls,files:fileFiles.map(f=>({name:f.name,size:f.size,mimetype:f.type,downloadPage:"",pending:true})),createdAtMs:Date.now(),createdAt:new Date().toISOString(),pending:true,conversationId:conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)};
+  activeMessageMap.set(localId,optimistic);messageMap.set(localId,optimistic);
   await idbPutMessages([optimistic]).catch(()=>{});
-  cacheOptimisticMedia(localId,imageFiles).catch(()=>{});
-
-  // Clear composer immediately but deliberately keep focus/keyboard alive.
-  input.value="";
-  input.style.height="auto";
-  attachedImages=[];
-  attachedFiles=[];
-  renderUploadQueue();
-  renderMessages();
-  focusMessageInput();
-
+  await Promise.all(imageFiles.map(async f=>{try{const u=imageUrls[imageFiles.indexOf(f)];await idbPutMedia("local:"+localId+":"+f.name+":"+f.size,f,f.type);return u}catch(_){return null}}));
+  input.value="";input.style.height="auto";attachedImages=[];attachedFiles=[];renderUploadQueue();renderMessages();
+  // Keep keyboard open/focus immediately; upload continues in the background.
+  requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){input.focus()}});
   (async()=>{
     try{
-      let uploadedImages=[];
-      let fileDatas=[];
-
-      if(hasMedia){
-        // Image => ImgBB, File => GoFile. Upload them independently in the background.
-        [uploadedImages,fileDatas]=await Promise.all([
-          Promise.all(imageFiles.map(f=>withTimeout(uploadImage(f),45000,"Image upload timed out"))),
-          Promise.all(fileFiles.map(f=>withTimeout(uploadFile(f),60000,"File upload timed out")))
-        ]);
-      }
-
+      const uploadedImages=[];
+      for(const f of imageFiles)uploadedImages.push(await uploadImage(f));
+      const fileDatas=[];
+      for(const f of fileFiles)fileDatas.push(await uploadFile(f));
       const firstFile=fileDatas[0]||null;
-      const payload={
-        senderUid:me.uid,
-        text,
-        imageUrls:uploadedImages,
-        imageUrl:uploadedImages[0]||"",
-        files:fileDatas.map(x=>({
-          downloadPage:x.downloadPage||"",
-          id:x.id||"",
-          name:x.name||"",
-          size:x.size||0,
-          mimetype:x.mimetype||""
-        })),
-        fileUrl:firstFile?.downloadPage||"",
-        fileId:firstFile?.id||"",
-        fileName:firstFile?.name||"",
-        fileSize:firstFile?.size||0,
-        fileMime:firstFile?.mimetype||"",
-        fileHost:fileDatas.length?"gofile":"",
-        createdAt:firebase.firestore.FieldValue.serverTimestamp(),
-        seen:false
-      };
-      if(target.isGroup){
-        payload.groupId=target.uid;
-        payload.groupMemberUids=target.memberUids||[];
-        payload.groupMemberMap=Object.fromEntries((target.memberUids||[]).map(x=>[String(x),true]));
-      }else{
-        payload.receiverUid=target.uid;
-      }
-
-      // Text-only path: directly save the message without touching any upload service.
-      const ref=await saveMessageToBackend(payload,15000);
-      const saved={
-        id:ref.id,
-        ...payload,
-        createdAtMs:Date.now(),
-        pending:false,
-        pendingSend:false,
-        pendingFailed:false,
-        conversationId
-      };
-      activeMessageMap.delete(localId);
-      messageMap.delete(localId);
-      activeMessageMap.set(ref.id,saved);
-      messageMap.set(ref.id,saved);
-      await idbPutMessages([saved]).catch(()=>{});
-      cacheMessages();
-
-      (URLS_FOR_OPTIMISTIC.get(localId)||[]).forEach(u=>{try{URL.revokeObjectURL(u)}catch(_){}});
-      URLS_FOR_OPTIMISTIC.delete(localId);
-
-      if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId)renderMessages();
+      const payload={senderUid:me.uid,text,imageUrls:uploadedImages,imageUrl:uploadedImages[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
+      if(activeFriend.isGroup){payload.groupId=activeFriend.uid;payload.groupMemberUids=activeFriend.memberUids||[];payload.groupMemberMap=Object.fromEntries((activeFriend.memberUids||[]).map(x=>[String(x),true]));}
+      else payload.receiverUid=activeFriend.uid;
+      const ref=await MESSAGES().add(payload);
+      activeMessageMap.delete(localId);messageMap.delete(localId);
+      const saved={id:ref.id,...payload,createdAtMs:Date.now(),pending:false,conversationId:conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)};
+      messageMap.set(ref.id,saved);activeMessageMap.set(ref.id,saved);await idbPutMessages([saved]).catch(()=>{});cacheMessages();renderMessages();
       toast("Message sent");
     }catch(err){
       console.error("sendMessage",err);
-      const failed=activeMessageMap.get(localId);
-      if(failed){
-        failed.pending=false;
-        failed.pendingSend=false;
-        failed.pendingFailed=true;
-        await idbPutMessages([failed]).catch(()=>{});
-        if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId)renderMessages();
-      }
-      const code=err?.code||"";
-      if(code==="PERMISSION_DENIED"||code==="permission-denied")toast("Message পাঠানোর permission নেই। Firebase Rules পরীক্ষা করুন");
-      else if(String(err?.message||"").toLowerCase().includes("timed out"))toast(hasMedia?"Upload/Message save হতে বেশি সময় লাগছে":"Message save হতে বেশি সময় লাগছে");
-      else toast(hasMedia?"ছবি/ফাইল পাঠানো যায়নি":"Message পাঠানো যায়নি");
+      const failed=activeMessageMap.get(localId);if(failed){failed.pendingFailed=true;failed.pending=false;renderMessages()}
+      toast(err.message==="Failed to fetch"?"Upload service blocked or offline":"Message পাঠানো যায়নি");
     }finally{
-      if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId)focusMessageInput();
+      btn.disabled=false;
+      requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){input.focus()}});
     }
   })();
 }
-
 function handleTyping(){if(!activeFriend||activeFriend.isGroup)return;clearTimeout(typingTimer);USERS().doc(me.uid).set({typingTo:activeFriend.uid,typingAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{});typingTimer=setTimeout(()=>USERS().doc(me.uid).set({typingTo:null},{merge:true}).catch(()=>{}),1200)}
 async function saveProfile(){const name=$("editName").value.trim();if(!name)return;try{const photo=$("editPhoto").value.trim()||null,bio=$("editBio").value.trim();await USERS().doc(me.uid).set({displayName:name,photoURL:photo,bio,profileUpdatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});profile={...profile,displayName:name,photoURL:photo,bio};syncProfile();closeAllModals();toast("Profile updated")}catch(e){toast("Profile save হয়নি")}}
 
@@ -1459,7 +1349,9 @@ let oldestLoadedCreatedAt=0;
 let syncInProgress=false;
 let historyPrefetchBusy=false;
 let historyLoadBusy=false;
+let historyPrefetchKey="";
 let initialChatWarmStarted=false;
+let initialChatWarmUserKey="";
 let activeRenderLimit=50;
 
 function idbOpen(){
@@ -1585,7 +1477,7 @@ async function remoteGroupMessages(groupId,limit=50,beforeMs=Infinity){
   const s=await MESSAGES().where("groupId","==",groupId).limit(limit).get();
   return s.docs.map(d=>({id:d.id,...d.data()})).filter(m=>{
     const t=m.createdAt?.toMillis?.()||m.createdAtMs||0;return t<(Number.isFinite(beforeMs)?beforeMs:Infinity);
-  }).sort((x,y)=>(y.createdAt?.toMillis?.()||y.createdAtMs||0)-(x.createdAt?.toMillis?.()||x.createdAtMs||0));
+  }).sort((x,y)=>(y.createdAt?.toMillis?.()||y.createdAtMs||0)-(x.createdAt?.toMillis?.()||x.createdAtMs||0)).slice(0,limit);
 }
 async function fetchConversationPage(uid,isGroup,limit=25,beforeMs=Infinity){
   const items=isGroup?await remoteGroupMessages(uid,limit,beforeMs):await remotePersonalMessages(uid,limit,beforeMs);
@@ -1594,78 +1486,43 @@ async function fetchConversationPage(uid,isGroup,limit=25,beforeMs=Infinity){
   return items.sort((a,b)=>(a.createdAt?.toMillis?.()||a.createdAtMs||0)-(b.createdAt?.toMillis?.()||b.createdAtMs||0));
 }
 let warmChatTimer=null;
-const FM_WARM_PAGE_COUNT=2,FM_PREFETCH_PAGE_COUNT=3,FM_WARM_CONCURRENCY=3;
-const warmConversationLocks=new Set();
-
 function scheduleWarmFriendChats(){
   if(warmChatTimer)clearTimeout(warmChatTimer);
-  warmChatTimer=setTimeout(()=>warmFriendChats().catch(e=>console.warn("warm chat cache",e)),120);
-}
-function localConversationMessages(uid,isGroup=false){
-  const cid=conversationIdFor(uid,isGroup);
-  return [...messageMap.values()].map(normalizeLocalMessage)
-    .filter(m=>m.conversationId===cid)
-    .sort((a,b)=>(a.createdAtMs||0)-(b.createdAtMs||0));
-}
-async function warmOneConversation(t){
-  if(!me||!t.uid)return;
-  const lock=`${t.isGroup?"g":"f"}:${t.uid}`;
-  if(warmConversationLocks.has(lock))return;
-  warmConversationLocks.add(lock);
-  try{
-    const cid=conversationIdFor(t.uid,t.isGroup);
-    let local=localConversationMessages(t.uid,t.isGroup);
-    if(local.length<messagePageSize*FM_WARM_PAGE_COUNT&&navigator.onLine){
-      const remote=await fetchConversationPage(t.uid,t.isGroup,messagePageSize*FM_WARM_PAGE_COUNT,Infinity);
-      const map=new Map([...local,...remote].map(m=>[m.id,m]));
-      local=[...map.values()].sort((a,b)=>(a.createdAtMs||0)-(b.createdAtMs||0));
-    }
-    const warm=local.slice(-messagePageSize*FM_WARM_PAGE_COUNT);
-    if(warm.length){
-      await idbPutMessages(warm);
-      await idbSetMeta("warm_"+cid,{at:Date.now(),oldest:warm[0].createdAtMs||0,newest:warm[warm.length-1].createdAtMs||0});
-      preloadMessageMedia(warm).catch(()=>{});
-    }
-  }catch(e){console.warn("warm chat cache",t.uid,e)}
-  finally{warmConversationLocks.delete(lock)}
+  warmChatTimer=setTimeout(()=>{warmFriendChats().catch(e=>console.warn("warm chat cache",e))},300);
 }
 async function warmFriendChats(){
-  if(!me)return;
-  const targets=[...friends.map(f=>({uid:f.friendUid,isGroup:false})),...groups.map(g=>({uid:g.id,isGroup:true}))].filter(t=>t.uid);
-  let index=0;
-  const worker=async()=>{
-    while(index<targets.length){
-      await warmOneConversation(targets[index++]);
-      await new Promise(r=>setTimeout(r,0));
-    }
-  };
-  await Promise.all(Array.from({length:Math.min(FM_WARM_CONCURRENCY,targets.length)},worker));
-  if(activeFriend)await renderLocalMessages(conversationIdFor(activeFriend.uid,!!activeFriend.isGroup),messagePageSize*FM_WARM_PAGE_COUNT);
+  if(!me||!navigator.onLine||initialChatWarmStarted)return;
+  initialChatWarmStarted=true;
+  const targets=[...friends.map(f=>({uid:f.friendUid,isGroup:false})),...groups.map(g=>({uid:g.id,isGroup:true}))];
+  const concurrency=2;let index=0;
+  const worker=async()=>{while(index<targets.length){const t=targets[index++];try{const cid=conversationIdFor(t.uid,t.isGroup);const newest=await fetchConversationPage(t.uid,t.isGroup,messagePageSize*2,Infinity);await idbSetMeta("warm_"+cid,{at:Date.now(),oldest:newest[0]?.createdAtMs||newest[0]?.createdAt?.toMillis?.()||0});}catch(e){console.warn("warm chat cache",t.uid,e)}}};
+  await Promise.all(Array.from({length:Math.min(concurrency,targets.length)},worker));
+  if(activeFriend)await renderLocalMessages(conversationIdFor(activeFriend.uid,activeFriend.isGroup),messagePageSize*2);
 }
 async function prefetchNextPages(uid,isGroup,beforeMs){
   if(!navigator.onLine||!beforeMs)return;
-  const cid=conversationIdFor(uid,isGroup),key=`prefetch_${cid}_${beforeMs}`;
-  if(await idbGetMeta(key))return;
   try{
-    const items=await fetchConversationPage(uid,isGroup,messagePageSize*FM_PREFETCH_PAGE_COUNT,beforeMs);
-    if(items.length){
-      await idbSetMeta(key,{at:Date.now(),oldest:items[0].createdAtMs||0,count:items.length});
-      preloadMessageMedia(items).catch(()=>{});
-    }
+    const items=await fetchConversationPage(uid,isGroup,messagePageSize*3,beforeMs);
+    if(items.length)await idbSetMeta("prefetch_"+conversationIdFor(uid,isGroup),{at:Date.now(),oldest:items[0].createdAtMs||items[0].createdAt?.toMillis?.()||0});
   }catch(e){console.warn("prefetch chat history",e)}
 }
 function triggerHistoryPrefetch(){
   if(!activeFriend||!oldestLoadedCreatedAt||historyPrefetchBusy)return;
+  const cid=conversationIdFor(activeFriend.uid,!!activeFriend.isGroup);
+  const key=cid+":"+oldestLoadedCreatedAt;
+  if(historyPrefetchKey===key)return;
+  historyPrefetchKey=key;
   const loadedCount=document.querySelectorAll("#messages .msg-row").length;
-  if(loadedCount<messagePageSize*FM_WARM_PAGE_COUNT)return;
+  if(loadedCount<=messagePageSize*2)return;
   historyPrefetchBusy=true;
   prefetchNextPages(activeFriend.uid,!!activeFriend.isGroup,oldestLoadedCreatedAt).finally(()=>historyPrefetchBusy=false);
 }
+
 async function idbGetMeta(key){const x=await idbGet(FM_STORES.meta,key);return x?.value}
 function normalizeLocalMessage(m){
   return {...m,
     createdAtMs:m.createdAtMs || (m.createdAt?.toMillis?m.createdAt.toMillis():Date.now()),
-    conversationId:m.conversationId || pair(m.senderUid,m.receiverUid)
+    conversationId:m.conversationId || (m.groupId?String(m.groupId):pair(m.senderUid,m.receiverUid))
   };
 }
 async function cacheSnapshotMessages(snapshot){
@@ -1676,35 +1533,22 @@ async function cacheSnapshotMessages(snapshot){
 async function renderLocalMessages(conversationId,limit=25,beforeMs=Infinity,keepPosition=false){
   const local=await idbMessages(conversationId,limit,beforeMs);
   if(conversationId!==currentConversationId)return local;
-  // Hydrate the active in-memory map too, so the first realtime snapshot cannot
-  // repaint a freshly opened cached chat as empty.
-  local.forEach(m=>{const n=normalizeLocalMessage(m);activeMessageMap.set(n.id,n)});
   oldestLoadedCreatedAt=local.length?local[0].createdAtMs:0;
+  activeMessageMap=new Map(local.map(m=>[m.id,normalizeLocalMessage(m)]));
+  if(local.length)await preloadMessageMedia(local).catch(()=>{});
   renderMessagesFromPlain(local,keepPosition);
-  preloadMessageMedia(local).then(()=>hydrateRenderedMedia()).catch(()=>{});
   return local;
 }
 function renderMessagesFromPlain(items,keepPosition=false){
   const box=$("messages");if(!box)return;
   const oldHeight=box.scrollHeight,oldTop=box.scrollTop;
-  const wasNearBottom=oldHeight-oldTop-box.clientHeight<90;
   if(!items.length){
     box.innerHTML='<div class="empty-state"><i class="fa-regular fa-comments"></i><b>No messages yet</b><span>Start the conversation.</span></div>';
     return;
   }
   box.innerHTML=items.map(m=>messageHTML(m)).join("");
-  requestAnimationFrame(()=>{
-    if(keepPosition)box.scrollTop=Math.max(0,box.scrollHeight-oldHeight+oldTop);
-    else if(wasNearBottom||oldHeight===0)box.scrollTop=box.scrollHeight;
-    else box.scrollTop=oldTop;
-  });
-}
-function hydrateRenderedMedia(){
-  const box=$("messages");if(!box)return;
-  box.querySelectorAll("img[data-media-url]").forEach(img=>{
-    const raw=img.getAttribute("data-media-url"),cached=mediaObjectUrls.get(raw);
-    if(cached&&img.src!==cached)img.src=cached;
-  });
+  if(keepPosition)box.scrollTop=Math.max(0,box.scrollHeight-oldHeight+oldTop);
+  else box.scrollTop=box.scrollHeight;
 }
 async function loadOlderLocalMessages(){
   if(!currentConversationId||!oldestLoadedCreatedAt||historyLoadBusy)return;
@@ -1716,7 +1560,9 @@ async function loadOlderLocalMessages(){
       older=await fetchConversationPage(activeFriend.uid,!!activeFriend.isGroup,messagePageSize,oldestLoadedCreatedAt);
     }
     if(!older.length){toast("No more messages");return}
-    older.forEach(m=>{const n=normalizeLocalMessage(m);activeMessageMap.set(n.id,n)});
+    older.forEach(m=>{const n=normalizeLocalMessage(m);activeMessageMap.set(n.id,n);messageMap.set(n.id,n)});
+    await idbPutMessages(older).catch(()=>{});
+    cacheMessages();
     activeRenderLimit+=older.length;
     box.insertAdjacentHTML("afterbegin",older.map(m=>messageHTML(m)).join(""));
     oldestLoadedCreatedAt=older[0].createdAtMs||older[0].createdAt?.toMillis?.()||oldestLoadedCreatedAt;
@@ -2077,33 +1923,7 @@ $("logoutBtn").onclick=async()=>{
 };
 document.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>$(b.dataset.close).classList.add("hidden"));
 $("chatInfo").onclick=()=>{if(!activeFriend)return;if(activeFriend.isGroup){toast(`${activeFriend.name||"Group"} · ${(activeFriend.memberUids||[]).length} জন সদস্য`);return}openUser(activeFriend.uid)};
-$("closeLightbox").onclick=()=>{$("lightbox").classList.add("hidden");$("lightboxImg").src="";window.__fmLightboxScale=1};
-(function installImageViewer(){
-  if(window.showImage)return;
-  window.__fmLightboxScale=1;
-  const apply=()=>{const img=$("lightboxImg");if(img)img.style.transform=`scale(${window.__fmLightboxScale||1})`};
-  window.showImage=function(url){
-    if(!url)return;
-    const box=$("lightbox"),img=$("lightboxImg");
-    if(!box||!img){window.open(url,"_blank","noopener");return;}
-    window.__fmLightboxScale=1;img.src=url;img.style.transform="scale(1)";box.classList.remove("hidden");
-  };
-  const addButton=(id,title,text,handler)=>{
-    if($(id)){$(id).onclick=handler;return;}
-    const box=$("lightbox");if(!box)return;
-    const b=document.createElement("button");b.id=id;b.type="button";b.title=title;b.textContent=text;b.style.cssText="position:absolute;z-index:5;min-width:40px;height:40px;border:0;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:20px;cursor:pointer";
-    box.appendChild(b);handler&&b.addEventListener("click",handler);
-    if(id==="fmZoomIn")b.style.right="88px";
-    if(id==="fmZoomOut")b.style.right="136px";
-    if(id==="fmZoomReset")b.style.right="184px";
-    if(id==="fmZoomDownload")b.style.right="40px";
-    b.style.bottom="24px";
-  };
-  addButton("fmZoomIn","Zoom in","+",()=>{window.__fmLightboxScale=Math.min(3,(window.__fmLightboxScale||1)+.25);apply()});
-  addButton("fmZoomOut","Zoom out","−",()=>{window.__fmLightboxScale=Math.max(.5,(window.__fmLightboxScale||1)-.25);apply()});
-  addButton("fmZoomReset","Reset zoom","1:1",()=>{window.__fmLightboxScale=1;apply()});
-  addButton("fmZoomDownload","Download original","↓",()=>{const img=$("lightboxImg");if(img?.src)downloadMedia(img.src)});
-})();
+$("closeLightbox").onclick=()=>{$("lightbox").classList.add("hidden");$("lightboxImg").src=""};
 
 
 // ===== v3 UI wiring =====
@@ -2181,14 +2001,22 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
 window.addEventListener("online",()=>{updateConnectivity();if(me){startListeners();watchIncomingNotifications();watchCallInvites();renderChats();renderPeople();renderGroups();}});
 window.addEventListener("offline",updateConnectivity);
 document.addEventListener("DOMContentLoaded",async()=>{
-  try{await idbOpen()}catch(e){console.warn("IndexedDB unavailable",e)}
+  try{
+    await idbOpen();
+    if(me){
+      const cached=await idbGetAll(FM_STORES.messages).catch(()=>[]);
+      if(cached.length){cached.forEach(m=>messageMap.set(m.id,m));renderChats();}
+    }
+  }catch(e){console.warn("IndexedDB unavailable",e)}
   updateConnectivity();
   const box=$("messages");
   if(box)box.addEventListener("scroll",()=>{
-    if(!activeFriend||syncInProgress)return;
-    if(box.scrollTop<110&&oldestLoadedCreatedAt)loadOlderLocalMessages();
-    if(box.scrollTop<Math.max(420,box.clientHeight*1.6))triggerHistoryPrefetch();
-  },{passive:true});
+    if(box.scrollTop<90 && activeFriend&&!syncInProgress){
+      const conversationId=activeFriend.isGroup?activeFriend.uid:pair(me.uid,activeFriend.uid);
+      if(conversationId&&oldestLoadedCreatedAt)loadOlderLocalMessages();
+      triggerHistoryPrefetch();
+    }
+  });
 });
 
 
