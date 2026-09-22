@@ -1,5 +1,5 @@
-const CACHE="fast-messenger-shell-v12";
-const RUNTIME="fast-messenger-runtime-v12";
+const CACHE="fast-messenger-shell-v13";
+const RUNTIME="fast-messenger-runtime-v13";
 const SHELL=["./","./index.html","./assets/js/app.js","./assets/theme-background.webp","./assets/logo.webp"];
 self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting())));
 self.addEventListener("activate",e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>![CACHE,RUNTIME].includes(k)).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
