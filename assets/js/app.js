@@ -585,7 +585,7 @@ let routeSyncing=false;
     .msg-img.pending-media:active{filter:blur(2px)}
     .media-action-row{display:flex;gap:6px;justify-content:flex-end;margin-top:5px}
     .media-action-btn{border:0;border-radius:999px;padding:5px 8px;background:rgba(0,0,0,.14);color:inherit;cursor:pointer;font-size:11px}
-    .pending-file{opacity:.65}\n    .media-wrap{contain:layout paint;content-visibility:auto}\n    .msg-img{will-change:transform;user-select:none;-webkit-user-drag:none}\n    .file-card.pending-file{pointer-events:none}\n    #lightboxImg{touch-action:none;transition:transform .12s ease;max-width:92vw;max-height:82vh}
+    .pending-file{opacity:.65}\n    .sending-message{opacity:.92}\n    .failed-message{opacity:.9}\n    .media-wrap{contain:layout paint;content-visibility:auto}\n    .msg-img{will-change:transform;user-select:none;-webkit-user-drag:none}\n    .file-card.pending-file{pointer-events:none}\n    #lightboxImg{touch-action:none;transition:transform .12s ease;max-width:92vw;max-height:82vh}
   `;document.head.appendChild(st);
 })();
 function viewRoute(id){return ({homeView:"home",peopleView:"people",groupsView:"groups",profileView:"profile",settingsView:"settings"})[id]||"home"}
@@ -1206,12 +1206,12 @@ function renderMessages(){
     const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
     const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
     const uniqueFiles=files.filter((f,i,a)=>((f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i)||(!f.downloadPage&&f.pending&&a.findIndex(x=>!x.downloadPage&&x.name===f.name&&x.size===f.size)===i)));
-    return `<div class="msg-row ${mine?"mine":"theirs"}"><div class="bubble ${m.pending?"pending-message":""}">
+    return `<div class="msg-row ${mine?"mine":"theirs"}"><div class="bubble ${m.pending?"pending-message":m.pendingSend?"sending-message":m.pendingFailed?"failed-message":""}">
       ${activeFriend.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(users.find(u=>u.uid===m.senderUid)?.displayName||"Member")}</div>`:""}
       ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
       ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img ${m.pending?"pending-media":""}" data-media-url="${escUrl(u)}" src="${escUrl(mediaObjectUrls.get(u)||u)}" loading="lazy" decoding="async" onclick="showImage('${escUrl(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${escUrl(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
       ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card ${m.pending?"pending-file":""}" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")} · uploading…</small></span></div>`).join("")}
-      <div class="msg-time">${time(m.createdAt||m.createdAtMs)}${m.pending?` <span style="opacity:.6">• uploading</span>`:""}</div>
+      <div class="msg-time">${time(m.createdAt||m.createdAtMs)}${m.pending?` <span style="opacity:.6">• uploading…</span>`:(m.pendingSend?` <span style="opacity:.6">• sending…</span>`:(m.pendingFailed?` <span style="opacity:.75">• failed</span>`:""))}</div>
     </div></div>`;
   }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
   if(wasNearBottom)box.scrollTop=box.scrollHeight;
@@ -1250,13 +1250,23 @@ async function openGroupChat(groupId){
 function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];renderUploadQueue();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
 function watchTyping(){if(typingUnsub)typingUnsub();if(!activeFriend||activeFriend.isGroup){$("typing").classList.add("hidden");return}typingUnsub=USERS().doc(activeFriend.uid).onSnapshot(s=>{$("typing").classList.toggle("hidden",(s.data()||{}).typingTo!==me.uid)})}
 
-async function uploadImage(file,onProgress){if(file.size>32*1024*1024)throw new Error("Image 32MB-এর বেশি হতে পারবে না");const fd=new FormData();fd.append("image",file);const r=await fetch(`https://api.imgbb.com/1/upload?key=${IMAGE_UPLOAD_KEY}`,{method:"POST",body:fd});const j=await r.json();if(!j.success)throw new Error("ছবি আপলোড করা যায়নি");if(onProgress)onProgress(100);return j.data.url}
+async function uploadImage(file,onProgress){
+  if(file.size>32*1024*1024)throw new Error("Image 32MB-এর বেশি হতে পারবে না");
+  const fd=new FormData();
+  fd.append("image",file);
+  const r=await fetch(`https://api.imgbb.com/1/upload?key=${IMAGE_UPLOAD_KEY}`,{method:"POST",body:fd});
+  const j=await r.json().catch(()=>null);
+  if(!r.ok||!j?.success||!j?.data?.url)throw new Error("ImgBB upload failed");
+  if(onProgress)onProgress(100);
+  return j.data.url;
+}
 
 async function uploadFile(file,onProgress){
-  const fd=new FormData();fd.append("file",file);
+  const fd=new FormData();
+  fd.append("file",file);
   const r=await fetch(FILE_UPLOAD_ENDPOINT,{method:"POST",body:fd});
   const j=await r.json().catch(()=>null);
-  if(!r.ok||!j||j.status!=="ok")throw new Error(j?.status||"ফাইল আপলোড করা যায়নি");
+  if(!r.ok||!j||j.status!=="ok")throw new Error(j?.status||"GoFile upload failed");
   if(onProgress)onProgress(100);
   return j.data;
 }
@@ -1285,79 +1295,154 @@ async function cacheOptimisticMedia(localId,files){
     }));
   }catch(e){console.warn("optimistic media cache",e)}
 }
+function focusMessageInput(){
+  const input=$("messageInput");
+  if(!input)return;
+  requestAnimationFrame(()=>{
+    try{input.focus({preventScroll:true})}catch(_){try{input.focus()}catch(__){}}
+  });
+}
+function withTimeout(promise,ms,label="Operation timed out"){
+  return Promise.race([
+    promise,
+    new Promise((_,reject)=>setTimeout(()=>reject(new Error(label)),ms))
+  ]);
+}
+async function saveMessageToBackend(payload,timeoutMs=15000){
+  // MESSAGES() is the app's existing Firestore-style message data layer.
+  return withTimeout(MESSAGES().add(payload),timeoutMs,"Message save timed out");
+}
 async function sendMessage(e){
   e.preventDefault();
   if(!activeFriend||!me)return;
   const input=$("messageInput"),text=input.value.trim();
-  if(!text&&!attachedImages.length&&!attachedFiles.length)return;
+  const imageFiles=[...attachedImages],fileFiles=[...attachedFiles];
+  if(!text&&!imageFiles.length&&!fileFiles.length)return;
   if(!activeFriend.isGroup&&!isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ হতে হবে, তারপর message পাঠাতে পারবেন");
   if(activeFriend.isGroup&&!(activeFriend.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
 
   const target={...activeFriend,memberUids:[...(activeFriend.memberUids||[])]};
-  const imageFiles=[...attachedImages],fileFiles=[...attachedFiles];
+  const hasMedia=imageFiles.length>0||fileFiles.length>0;
   const localId="local_"+Date.now()+"_"+Math.random().toString(36).slice(2);
-  const imageUrls=imageFiles.map(f=>URL.createObjectURL(f));
   const conversationId=conversationIdFor(target.uid,!!target.isGroup);
+  const imageUrls=imageFiles.map(f=>URL.createObjectURL(f));
   URLS_FOR_OPTIMISTIC.set(localId,imageUrls);
 
+  // IMPORTANT: text-only messages are NOT upload jobs.
+  // Keep separate states so a plain text bubble never says "uploading".
   const optimistic={
-    id:localId,senderUid:me.uid,text,imageUrls,
+    id:localId,
+    senderUid:me.uid,
+    text,
+    imageUrls,
     files:fileFiles.map(f=>({name:f.name,size:f.size,mimetype:f.type,downloadPage:"",pending:true})),
-    createdAtMs:Date.now(),createdAt:new Date().toISOString(),pending:true,conversationId
+    createdAtMs:Date.now(),
+    createdAt:new Date().toISOString(),
+    pending:hasMedia,
+    pendingSend:!hasMedia,
+    pendingFailed:false,
+    conversationId
   };
-  activeMessageMap.set(localId,optimistic);messageMap.set(localId,optimistic);
+  activeMessageMap.set(localId,optimistic);
+  messageMap.set(localId,optimistic);
   await idbPutMessages([optimistic]).catch(()=>{});
   cacheOptimisticMedia(localId,imageFiles).catch(()=>{});
 
-  input.value="";input.style.height="auto";attachedImages=[];attachedFiles=[];
-  renderUploadQueue();renderMessages();
-  requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){try{input.focus()}catch(__){}}});
+  // Clear composer immediately but deliberately keep focus/keyboard alive.
+  input.value="";
+  input.style.height="auto";
+  attachedImages=[];
+  attachedFiles=[];
+  renderUploadQueue();
+  renderMessages();
+  focusMessageInput();
 
   (async()=>{
     try{
-      const uploadedImages=[];
-      for(const f of imageFiles)uploadedImages.push(await uploadImage(f));
-      const fileDatas=[];
-      for(const f of fileFiles)fileDatas.push(await uploadFile(f));
+      let uploadedImages=[];
+      let fileDatas=[];
+
+      if(hasMedia){
+        // Image => ImgBB, File => GoFile. Upload them independently in the background.
+        [uploadedImages,fileDatas]=await Promise.all([
+          Promise.all(imageFiles.map(f=>withTimeout(uploadImage(f),45000,"Image upload timed out"))),
+          Promise.all(fileFiles.map(f=>withTimeout(uploadFile(f),60000,"File upload timed out")))
+        ]);
+      }
+
       const firstFile=fileDatas[0]||null;
       const payload={
-        senderUid:me.uid,text,imageUrls:uploadedImages,imageUrl:uploadedImages[0]||"",
-        files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),
-        fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",
-        fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",
-        createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false
+        senderUid:me.uid,
+        text,
+        imageUrls:uploadedImages,
+        imageUrl:uploadedImages[0]||"",
+        files:fileDatas.map(x=>({
+          downloadPage:x.downloadPage||"",
+          id:x.id||"",
+          name:x.name||"",
+          size:x.size||0,
+          mimetype:x.mimetype||""
+        })),
+        fileUrl:firstFile?.downloadPage||"",
+        fileId:firstFile?.id||"",
+        fileName:firstFile?.name||"",
+        fileSize:firstFile?.size||0,
+        fileMime:firstFile?.mimetype||"",
+        fileHost:fileDatas.length?"gofile":"",
+        createdAt:firebase.firestore.FieldValue.serverTimestamp(),
+        seen:false
       };
       if(target.isGroup){
         payload.groupId=target.uid;
         payload.groupMemberUids=target.memberUids||[];
         payload.groupMemberMap=Object.fromEntries((target.memberUids||[]).map(x=>[String(x),true]));
-      }else payload.receiverUid=target.uid;
+      }else{
+        payload.receiverUid=target.uid;
+      }
 
-      const ref=await MESSAGES().add(payload);
-      const saved={id:ref.id,...payload,createdAtMs:Date.now(),pending:false,conversationId};
-      activeMessageMap.delete(localId);messageMap.delete(localId);
-      activeMessageMap.set(ref.id,saved);messageMap.set(ref.id,saved);
+      // Text-only path: directly save the message without touching any upload service.
+      const ref=await saveMessageToBackend(payload,15000);
+      const saved={
+        id:ref.id,
+        ...payload,
+        createdAtMs:Date.now(),
+        pending:false,
+        pendingSend:false,
+        pendingFailed:false,
+        conversationId
+      };
+      activeMessageMap.delete(localId);
+      messageMap.delete(localId);
+      activeMessageMap.set(ref.id,saved);
+      messageMap.set(ref.id,saved);
       await idbPutMessages([saved]).catch(()=>{});
       cacheMessages();
-      (URLS_FOR_OPTIMISTIC.get(localId)||[]).forEach(u=>{try{URL.revokeObjectURL(u)}catch(_){}});URLS_FOR_OPTIMISTIC.delete(localId);
+
+      (URLS_FOR_OPTIMISTIC.get(localId)||[]).forEach(u=>{try{URL.revokeObjectURL(u)}catch(_){}});
+      URLS_FOR_OPTIMISTIC.delete(localId);
+
       if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId)renderMessages();
       toast("Message sent");
     }catch(err){
       console.error("sendMessage",err);
       const failed=activeMessageMap.get(localId);
       if(failed){
-        failed.pendingFailed=true;failed.pending=false;
+        failed.pending=false;
+        failed.pendingSend=false;
+        failed.pendingFailed=true;
         await idbPutMessages([failed]).catch(()=>{});
         if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId)renderMessages();
       }
-      toast(err?.message==="Failed to fetch"?"Upload service blocked or offline":"Message পাঠানো যায়নি");
+      const code=err?.code||"";
+      if(code==="PERMISSION_DENIED"||code==="permission-denied")toast("Message পাঠানোর permission নেই। Firebase Rules পরীক্ষা করুন");
+      else if(String(err?.message||"").toLowerCase().includes("timed out"))toast(hasMedia?"Upload/Message save হতে বেশি সময় লাগছে":"Message save হতে বেশি সময় লাগছে");
+      else toast(hasMedia?"ছবি/ফাইল পাঠানো যায়নি":"Message পাঠানো যায়নি");
     }finally{
-      if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId){
-        requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){try{input.focus()}catch(__){}}});
-      }
+      if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId)focusMessageInput();
     }
   })();
 }
+
 function handleTyping(){if(!activeFriend||activeFriend.isGroup)return;clearTimeout(typingTimer);USERS().doc(me.uid).set({typingTo:activeFriend.uid,typingAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{});typingTimer=setTimeout(()=>USERS().doc(me.uid).set({typingTo:null},{merge:true}).catch(()=>{}),1200)}
 async function saveProfile(){const name=$("editName").value.trim();if(!name)return;try{const photo=$("editPhoto").value.trim()||null,bio=$("editBio").value.trim();await USERS().doc(me.uid).set({displayName:name,photoURL:photo,bio,profileUpdatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});profile={...profile,displayName:name,photoURL:photo,bio};syncProfile();closeAllModals();toast("Profile updated")}catch(e){toast("Profile save হয়নি")}}
 
@@ -1591,6 +1676,9 @@ async function cacheSnapshotMessages(snapshot){
 async function renderLocalMessages(conversationId,limit=25,beforeMs=Infinity,keepPosition=false){
   const local=await idbMessages(conversationId,limit,beforeMs);
   if(conversationId!==currentConversationId)return local;
+  // Hydrate the active in-memory map too, so the first realtime snapshot cannot
+  // repaint a freshly opened cached chat as empty.
+  local.forEach(m=>{const n=normalizeLocalMessage(m);activeMessageMap.set(n.id,n)});
   oldestLoadedCreatedAt=local.length?local[0].createdAtMs:0;
   renderMessagesFromPlain(local,keepPosition);
   preloadMessageMedia(local).then(()=>hydrateRenderedMedia()).catch(()=>{});
@@ -1628,7 +1716,7 @@ async function loadOlderLocalMessages(){
       older=await fetchConversationPage(activeFriend.uid,!!activeFriend.isGroup,messagePageSize,oldestLoadedCreatedAt);
     }
     if(!older.length){toast("No more messages");return}
-    older.forEach(m=>activeMessageMap.set(m.id,m));
+    older.forEach(m=>{const n=normalizeLocalMessage(m);activeMessageMap.set(n.id,n)});
     activeRenderLimit+=older.length;
     box.insertAdjacentHTML("afterbegin",older.map(m=>messageHTML(m)).join(""));
     oldestLoadedCreatedAt=older[0].createdAtMs||older[0].createdAt?.toMillis?.()||oldestLoadedCreatedAt;
@@ -1989,7 +2077,33 @@ $("logoutBtn").onclick=async()=>{
 };
 document.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>$(b.dataset.close).classList.add("hidden"));
 $("chatInfo").onclick=()=>{if(!activeFriend)return;if(activeFriend.isGroup){toast(`${activeFriend.name||"Group"} · ${(activeFriend.memberUids||[]).length} জন সদস্য`);return}openUser(activeFriend.uid)};
-$("closeLightbox").onclick=()=>{$("lightbox").classList.add("hidden");$("lightboxImg").src=""};
+$("closeLightbox").onclick=()=>{$("lightbox").classList.add("hidden");$("lightboxImg").src="";window.__fmLightboxScale=1};
+(function installImageViewer(){
+  if(window.showImage)return;
+  window.__fmLightboxScale=1;
+  const apply=()=>{const img=$("lightboxImg");if(img)img.style.transform=`scale(${window.__fmLightboxScale||1})`};
+  window.showImage=function(url){
+    if(!url)return;
+    const box=$("lightbox"),img=$("lightboxImg");
+    if(!box||!img){window.open(url,"_blank","noopener");return;}
+    window.__fmLightboxScale=1;img.src=url;img.style.transform="scale(1)";box.classList.remove("hidden");
+  };
+  const addButton=(id,title,text,handler)=>{
+    if($(id)){$(id).onclick=handler;return;}
+    const box=$("lightbox");if(!box)return;
+    const b=document.createElement("button");b.id=id;b.type="button";b.title=title;b.textContent=text;b.style.cssText="position:absolute;z-index:5;min-width:40px;height:40px;border:0;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:20px;cursor:pointer";
+    box.appendChild(b);handler&&b.addEventListener("click",handler);
+    if(id==="fmZoomIn")b.style.right="88px";
+    if(id==="fmZoomOut")b.style.right="136px";
+    if(id==="fmZoomReset")b.style.right="184px";
+    if(id==="fmZoomDownload")b.style.right="40px";
+    b.style.bottom="24px";
+  };
+  addButton("fmZoomIn","Zoom in","+",()=>{window.__fmLightboxScale=Math.min(3,(window.__fmLightboxScale||1)+.25);apply()});
+  addButton("fmZoomOut","Zoom out","−",()=>{window.__fmLightboxScale=Math.max(.5,(window.__fmLightboxScale||1)-.25);apply()});
+  addButton("fmZoomReset","Reset zoom","1:1",()=>{window.__fmLightboxScale=1;apply()});
+  addButton("fmZoomDownload","Download original","↓",()=>{const img=$("lightboxImg");if(img?.src)downloadMedia(img.src)});
+})();
 
 
 // ===== v3 UI wiring =====
