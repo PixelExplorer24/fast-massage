@@ -1386,7 +1386,89 @@ function initPreferences(){
   applyNotifications(localStorage.getItem("fm_notifications")!=="off",false);
 }
 
-$("googleLogin").onclick=async()=>{const b=$("googleLogin");b.disabled=true;try{await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider())}catch(e){console.error(e);$("loginError").textContent=e.message||"Login failed"}finally{b.disabled=false}};
+// -----------------------------------------------------------------------------
+// Google Sign-in loading states
+// -----------------------------------------------------------------------------
+// Show an immediate loading state when the user clicks Google sign-in, then
+// switch to an authentication state after the Google account has been selected.
+// The login screen is finally replaced by the normal app from onAuthStateChanged.
+(function initGoogleLoginLoading(){
+  const b=$("googleLogin");
+  if(!b)return;
+
+  // Inline spinner styles keep this update self-contained in app.js, so no
+  // separate CSS file is required.
+  if(!document.getElementById("fmGoogleLoginLoaderStyle")){
+    const style=document.createElement("style");
+    style.id="fmGoogleLoginLoaderStyle";
+    style.textContent=`
+      .fm-google-loader{
+        width:17px;height:17px;border:2px solid currentColor;
+        border-right-color:transparent;border-radius:50%;
+        display:inline-block;vertical-align:-4px;margin-right:9px;
+        animation:fmGoogleSpin .7s linear infinite;
+      }
+      @keyframes fmGoogleSpin{to{transform:rotate(360deg)}}
+      #googleLogin.fm-loading{cursor:wait;opacity:.9}
+    `;
+    document.head.appendChild(style);
+  }
+
+  const originalHtml=b.innerHTML;
+
+  const setLoading=(message)=>{
+    b.disabled=true;
+    b.classList.add("fm-loading");
+    b.setAttribute("aria-busy","true");
+    b.innerHTML=`<span class="fm-google-loader" aria-hidden="true"></span><span>${message}</span>`;
+  };
+
+  const reset=()=>{
+    b.disabled=false;
+    b.classList.remove("fm-loading");
+    b.removeAttribute("aria-busy");
+    b.innerHTML=originalHtml;
+  };
+
+  b.onclick=async()=>{
+    if(b.disabled)return;
+
+    const errorBox=$("loginError");
+    if(errorBox)errorBox.textContent="";
+
+    // Phase 1: immediately acknowledge the click before opening Google's UI.
+    setLoading("Google account খুলছে...");
+
+    try{
+      await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+
+      const provider=new firebase.auth.GoogleAuthProvider();
+      provider.setCustomParameters({prompt:"select_account"});
+
+      // Phase 2 starts as soon as the Google account selection/auth flow
+      // returns successfully. Firebase Auth will then trigger the authoritative
+      // onAuthStateChanged callback below.
+      await auth.signInWithPopup(provider);
+      setLoading("Google account যাচাই করা হচ্ছে...");
+    }catch(e){
+      console.error("Google sign-in",e);
+
+      const cancelled=e?.code==="auth/popup-closed-by-user" ||
+                      e?.code==="auth/cancelled-popup-request";
+
+      if(errorBox){
+        errorBox.textContent=cancelled
+          ? "Google account নির্বাচন বাতিল করা হয়েছে। আবার চেষ্টা করুন।"
+          : (e?.message||"Login failed");
+      }
+
+      reset();
+    }
+  };
+
+  // Expose a tiny reset hook for the auth callback.
+  window.__resetGoogleLoginLoading=reset;
+})();
 // -----------------------------------------------------------------------------
 // Instant offline-first shell
 // -----------------------------------------------------------------------------
@@ -1428,6 +1510,7 @@ if(hadCachedSession)preloadCachedSession();
 auth.onAuthStateChanged(async user=>{
   authResolved=true;
   if(user){
+    if(window.__resetGoogleLoginLoading)window.__resetGoogleLoginLoading();
     me=user;localStorage.setItem("fm_session_uid",user.uid);
     $("loginScreen").classList.add("hidden");$("app").classList.remove("hidden");
     document.body.classList.remove("booting");
@@ -1439,6 +1522,7 @@ auth.onAuthStateChanged(async user=>{
     heartbeat();startListeners();watchIncomingNotifications();watchCallInvites();
     ensureUser().then(()=>saveLocal("profile",profile)).catch(e=>console.warn("profile sync delayed",e));
   }else{
+    if(window.__resetGoogleLoginLoading)window.__resetGoogleLoginLoading();
     localStorage.removeItem("fm_session_uid");
     me=null;profile=null;
     $("app").classList.add("hidden");$("loginScreen").classList.remove("hidden");
