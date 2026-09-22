@@ -999,7 +999,7 @@ async function acceptRequest(id,uid){
     renderPeople();
   }catch(e){
     console.error("acceptRequest",e);
-    const msg=e?.code==="permission-denied"?"Friend accept করার permission নেই। Firestore rules পরীক্ষা করুন":e?.message==="REQUEST_NOT_FOUND"?"Request আর পাওয়া যাচ্ছে না":e?.message==="REQUEST_INVALID"?"এই request আপনার জন্য নয়":e?.message==="REQUEST_ALREADY_HANDLED"?"এই request আগে থেকেই সম্পন্ন হয়েছে":"Friend request accept করা যায়নি";
+    const msg=e?.code==="permission-denied"?"Friend request গ্রহণ করার অনুমতি নেই। আবার চেষ্টা করুন।":e?.message==="REQUEST_NOT_FOUND"?"Request আর পাওয়া যাচ্ছে না":e?.message==="REQUEST_INVALID"?"এই request আপনার জন্য নয়":e?.message==="REQUEST_ALREADY_HANDLED"?"এই request আগে থেকেই সম্পন্ন হয়েছে":"Friend request accept করা যায়নি";
     toast(msg);
   }
 }
@@ -1424,45 +1424,103 @@ function initPreferences(){
   };
 
   const reset=()=>{
+    loginAttempt++;
+    clearPopupWatch();
     b.disabled=false;
     b.classList.remove("fm-loading");
     b.removeAttribute("aria-busy");
     b.innerHTML=originalHtml;
   };
 
+  let loginAttempt=0;
+  let popupWatchTimer=null;
+  let popupWasBlurred=false;
+
+  const clearPopupWatch=()=>{
+    if(popupWatchTimer){
+      clearTimeout(popupWatchTimer);
+      popupWatchTimer=null;
+    }
+    window.removeEventListener("focus",onWindowFocus,true);
+    window.removeEventListener("pageshow",onWindowFocus,true);
+  };
+
+  const cancelGoogleLogin=(message="Google account নির্বাচন বাতিল করা হয়েছে। আবার চেষ্টা করুন।")=>{
+    clearPopupWatch();
+    if(errorBoxRef)errorBoxRef.textContent=message;
+    reset();
+  };
+
+  let errorBoxRef=null;
+
+  function onWindowFocus(){
+    // Returning focus usually means the Google popup was closed. Do not
+    // cancel immediately: Firebase may need a short moment to finish the
+    // successful OAuth callback. If no auth state arrives, treat it as cancel.
+    if(!popupWasBlurred || !b.disabled)return;
+    clearTimeout(popupWatchTimer);
+    popupWatchTimer=setTimeout(()=>{
+      if(b.disabled && !auth.currentUser){
+        cancelGoogleLogin();
+      }
+    },1500);
+  }
+
   b.onclick=async()=>{
     if(b.disabled)return;
 
-    const errorBox=$("loginError");
-    if(errorBox)errorBox.textContent="";
+    const attempt=++loginAttempt;
+    errorBoxRef=$("loginError");
+    if(errorBoxRef)errorBoxRef.textContent="";
+
+    popupWasBlurred=false;
+    clearPopupWatch();
 
     // Phase 1: immediately acknowledge the click before opening Google's UI.
     setLoading("Google account খুলছে...");
 
+    // Firebase normally rejects signInWithPopup with auth/popup-closed-by-user.
+    // Some browsers/webviews can leave that promise pending after the popup is
+    // manually closed, so also watch focus restoration as a reliable fallback.
+    const markBlur=()=>{
+      if(b.disabled)popupWasBlurred=true;
+    };
+    window.addEventListener("blur",markBlur,{once:false,capture:true});
+    window.addEventListener("focus",onWindowFocus,true);
+    window.addEventListener("pageshow",onWindowFocus,true);
+
     try{
       await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+
+      if(attempt!==loginAttempt)return;
 
       const provider=new firebase.auth.GoogleAuthProvider();
       provider.setCustomParameters({prompt:"select_account"});
 
-      // Phase 2 starts as soon as the Google account selection/auth flow
-      // returns successfully. Firebase Auth will then trigger the authoritative
-      // onAuthStateChanged callback below.
+      // Phase 2 starts as soon as Google returns. Firebase Auth will then
+      // trigger the authoritative onAuthStateChanged callback below.
       await auth.signInWithPopup(provider);
+
+      clearPopupWatch();
       setLoading("Google account যাচাই করা হচ্ছে...");
     }catch(e){
       console.error("Google sign-in",e);
 
       const cancelled=e?.code==="auth/popup-closed-by-user" ||
-                      e?.code==="auth/cancelled-popup-request";
+                      e?.code==="auth/cancelled-popup-request" ||
+                      e?.code==="auth/popup-blocked";
 
-      if(errorBox){
-        errorBox.textContent=cancelled
+      clearPopupWatch();
+
+      if(errorBoxRef){
+        errorBoxRef.textContent=cancelled
           ? "Google account নির্বাচন বাতিল করা হয়েছে। আবার চেষ্টা করুন।"
-          : (e?.message||"Login failed");
+          : "Google account দিয়ে লগইন করা যায়নি। আবার চেষ্টা করুন।";
       }
 
       reset();
+    }finally{
+      window.removeEventListener("blur",markBlur,true);
     }
   };
 
