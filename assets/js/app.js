@@ -663,9 +663,17 @@ function startListeners(){
 
   safeListen("users",USERS(),s=>{
     const liveUsers=s.docs.map(d=>({uid:d.id,...d.data()})).filter(x=>x.uid!==me.uid);
-    // Do not erase a warm cache because the first realtime read can briefly be empty.
-    if(liveUsers.length>0 || users.length===0){
-      users=liveUsers;
+    // Merge realtime users into the warm cache instead of replacing it. This
+    // preserves profile fields (especially photoURL) during the first/partial
+    // snapshot and prevents chat avatars from disappearing on refresh.
+    if(liveUsers.length>0){
+      const merged=new Map();
+      [...users,...liveUsers].forEach(u=>{
+        const uid=String(u?.uid||"");
+        if(!uid)return;
+        merged.set(uid,{...(merged.get(uid)||{}),...u});
+      });
+      users=[...merged.values()].filter(x=>String(x.uid)!==String(me.uid));
       saveLocal("users",users);
     }
     renderPeople();renderGroups();renderChats();
@@ -850,7 +858,15 @@ function buildChatRoomCache(){
   const rooms=[];
   const registryFriends=Array.isArray(readJsonKey(persistentFriendsKey(),[]))?readJsonKey(persistentFriendsKey(),[]):[];
   const sourceFriends=friends.length?friends:registryFriends;
-  sourceFriends.forEach(f=>rooms.push({kind:"friend",friend:{...f}}));
+  sourceFriends.forEach(f=>{
+    const uid=String(f?.friendUid||f?.uid||"");
+    const user=uid?(users.find(x=>String(x.uid)===uid)||null):null;
+    // Persist the resolved user profile together with the chat room. The RTDB
+    // friends record only contains the friendship relation, so without this
+    // merge a refresh can temporarily lose the friend's photo until /users
+    // finishes loading.
+    rooms.push({kind:"friend",friend:{...f,...(user||{}),friendUid:f.friendUid||f.uid,ownerUid:f.ownerUid||me.uid}});
+  });
   groups.forEach(g=>rooms.push({kind:"group",group:{...g}}));
   // Also persist people found in message history so a refresh never blanks an existing room.
   const known=new Set(rooms.filter(r=>r.kind==="friend").map(r=>String(r.friend?.friendUid||"")));
@@ -897,7 +913,18 @@ function renderChats(){
   const registryFriends=Array.isArray(readJsonKey(persistentFriendsKey(),[]))?readJsonKey(persistentFriendsKey(),[]):[];
   const roomFriends=friends.length?friends:(cachedFriends.length?cachedFriends:registryFriends);
   roomFriends.forEach(f=>{if(f.friendUid&&!by.has(f.friendUid))by.set(f.friendUid,null)});
-  let rows=[...by.entries()].map(([uid,m])=>({uid,m,u:users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid)||{uid,displayName:"User"}}));
+  const cachedFriendProfiles=new Map(
+    cachedRooms
+      .filter(x=>x.kind==="friend")
+      .map(x=>[String(x.friend?.friendUid||x.friendUid||""),x.friend])
+      .filter(([uid])=>uid)
+  );
+  let rows=[...by.entries()].map(([uid,m])=>{
+    const liveUser=users.find(x=>String(x.uid)===String(uid));
+    const friend=friends.find(x=>String(x.friendUid)===String(uid));
+    const cachedProfile=cachedFriendProfiles.get(String(uid));
+    return {uid,m,u:{...(cachedProfile||{}),...(friend||{}),...(liveUser||{}),uid}};
+  });
   if(q.length>0){
     rows=rows.filter(r=>
       String(r.u.displayName||"").toLowerCase().includes(q)||
