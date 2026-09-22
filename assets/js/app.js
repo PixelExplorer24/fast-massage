@@ -585,7 +585,7 @@ let routeSyncing=false;
     .msg-img.pending-media:active{filter:blur(2px)}
     .media-action-row{display:flex;gap:6px;justify-content:flex-end;margin-top:5px}
     .media-action-btn{border:0;border-radius:999px;padding:5px 8px;background:rgba(0,0,0,.14);color:inherit;cursor:pointer;font-size:11px}
-    .pending-file{opacity:.65}
+    .pending-file{opacity:.65}\n    .media-wrap{contain:layout paint;content-visibility:auto}\n    .msg-img{will-change:transform;user-select:none;-webkit-user-drag:none}\n    .file-card.pending-file{pointer-events:none}\n    #lightboxImg{touch-action:none;transition:transform .12s ease;max-width:92vw;max-height:82vh}
   `;document.head.appendChild(st);
 })();
 function viewRoute(id){return ({homeView:"home",peopleView:"people",groupsView:"groups",profileView:"profile",settingsView:"settings"})[id]||"home"}
@@ -1144,21 +1144,29 @@ function setChatHeader(u){
 
 window.openUser=uid=>{const u=users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid);if(!u)return;$("userModalAvatar").src=avatar(u);$("userModalName").textContent=u.displayName||"User";$("userModalEmail").textContent=u.email||"";$("userModalBio").textContent=u.bio||"No bio added.";$("userModalChat").onclick=()=>{closeAllModals();openChat(uid)};$("userModal").classList.remove("hidden")};
 
-function subscribeChat(uid){chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];const ref=MESSAGES();if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(renderMessages));}else{chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(renderMessages));chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(renderMessages));}}
+function subscribeChat(uid){
+  chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];
+  const ref=MESSAGES(),repaint=()=>{if(activeFriend)renderMessages()};
+  if(activeFriend?.isGroup)chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(repaint));
+  else{
+    chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(repaint));
+    chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(repaint));
+  }
+}
 function messageHTML(m){
   const mine=m.senderUid===me?.uid;
   if(m.type==="call")return `<div class="msg-row ${mine?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
   const imgs=Array.isArray(m.imageUrls)?m.imageUrls:[];
   const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
   const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
-  const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
+  const uniqueFiles=files.filter((f,i,a)=>((f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i)||(!f.downloadPage&&f.pending&&a.findIndex(x=>!x.downloadPage&&x.name===f.name&&x.size===f.size)===i)));
   const senderName=users.find(u=>String(u.uid)===String(m.senderUid))?.displayName||"Member";
   const delBtn=`<button class="msg-delete-btn" type="button" title="Delete message" onclick="deleteMessage('${esc(m.id||'')}')"><i class="fa-solid fa-trash-can"></i></button>`;
   return `<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">
     ${activeFriend?.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(senderName)}</div>`:""}
     ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-    ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img" src="${esc(mediaObjectUrls.get(u)||u)}" loading="lazy" onclick="showImage('${esc(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${esc(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${esc(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
-    ${uniqueFiles.map(f=>`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
+    ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img" data-media-url="${esc(u)}" src="${esc(mediaObjectUrls.get(u)||u)}" loading="lazy" decoding="async" onclick="showImage('${esc(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${esc(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${esc(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
+    ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")} · uploading…</small></span></div>`).join("")}
     <div class="msg-footer"><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div>${delBtn}</div>
   </div></div>`;
 }
@@ -1197,12 +1205,12 @@ function renderMessages(){
     const mine=m.senderUid===me.uid,imgs=m.imageUrls||[];
     const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
     const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
-    const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
+    const uniqueFiles=files.filter((f,i,a)=>((f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i)||(!f.downloadPage&&f.pending&&a.findIndex(x=>!x.downloadPage&&x.name===f.name&&x.size===f.size)===i)));
     return `<div class="msg-row ${mine?"mine":"theirs"}"><div class="bubble ${m.pending?"pending-message":""}">
       ${activeFriend.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(users.find(u=>u.uid===m.senderUid)?.displayName||"Member")}</div>`:""}
       ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-      ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img ${m.pending?"pending-media":""}" src="${escUrl(mediaObjectUrls.get(u)||u)}" loading="lazy" onclick="showImage('${escUrl(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${escUrl(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
-      ${uniqueFiles.map(f=>`<a class="file-card ${m.pending?"pending-file":""}" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
+      ${imgs.map(u=>`<div class="media-wrap"><img class="msg-img ${m.pending?"pending-media":""}" data-media-url="${escUrl(u)}" src="${escUrl(mediaObjectUrls.get(u)||u)}" loading="lazy" decoding="async" onclick="showImage('${escUrl(u)}')"><div class="media-action-row"><button class="media-action-btn" type="button" onclick="downloadMedia('${escUrl(u)}',event)"><i class="fa-solid fa-download"></i></button><button class="media-action-btn" type="button" onclick="showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button></div></div>`).join("")}
+      ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card ${m.pending?"pending-file":""}" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")} · uploading…</small></span></div>`).join("")}
       <div class="msg-time">${time(m.createdAt||m.createdAtMs)}${m.pending?` <span style="opacity:.6">• uploading</span>`:""}</div>
     </div></div>`;
   }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
@@ -1267,21 +1275,44 @@ function renderUploadQueue(){
     <span class="queue-copy"><b>${esc(x.f.name)}</b><small>${bytes(x.f.size)}</small><span class="progress"><i></i></span></span>
   </div>`).join("");
 }
+const URLS_FOR_OPTIMISTIC=new Map();
+async function cacheOptimisticMedia(localId,files){
+  if(!files?.length)return;
+  try{
+    await Promise.all(files.map(async(file,index)=>{
+      const key=`optimistic:${localId}:${index}:${file.name}:${file.size}`;
+      await idbPutMedia(key,file,file.type||"");
+    }));
+  }catch(e){console.warn("optimistic media cache",e)}
+}
 async function sendMessage(e){
-  e.preventDefault();if(!activeFriend||!me)return;
+  e.preventDefault();
+  if(!activeFriend||!me)return;
   const input=$("messageInput"),text=input.value.trim();
   if(!text&&!attachedImages.length&&!attachedFiles.length)return;
   if(!activeFriend.isGroup&&!isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ হতে হবে, তারপর message পাঠাতে পারবেন");
   if(activeFriend.isGroup&&!(activeFriend.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
-  const btn=document.querySelector(".send-btn");btn.disabled=true;
+
+  const target={...activeFriend,memberUids:[...(activeFriend.memberUids||[])]};
   const imageFiles=[...attachedImages],fileFiles=[...attachedFiles];
   const localId="local_"+Date.now()+"_"+Math.random().toString(36).slice(2);
   const imageUrls=imageFiles.map(f=>URL.createObjectURL(f));
-  const optimistic={id:localId,senderUid:me.uid,text,imageUrls,files:fileFiles.map(f=>({name:f.name,size:f.size,mimetype:f.type,downloadPage:"",pending:true})),createdAtMs:Date.now(),createdAt:new Date().toISOString(),pending:true,conversationId:conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)};
-  activeMessageMap.set(localId,optimistic);messageMap.set(localId,optimistic);await idbPutMessages([optimistic]).catch(()=>{});
-  input.value="";input.style.height="auto";attachedImages=[];attachedFiles=[];renderUploadQueue();renderMessages();
-  // Keep keyboard open/focus immediately; upload continues in the background.
-  requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){input.focus()}});
+  const conversationId=conversationIdFor(target.uid,!!target.isGroup);
+  URLS_FOR_OPTIMISTIC.set(localId,imageUrls);
+
+  const optimistic={
+    id:localId,senderUid:me.uid,text,imageUrls,
+    files:fileFiles.map(f=>({name:f.name,size:f.size,mimetype:f.type,downloadPage:"",pending:true})),
+    createdAtMs:Date.now(),createdAt:new Date().toISOString(),pending:true,conversationId
+  };
+  activeMessageMap.set(localId,optimistic);messageMap.set(localId,optimistic);
+  await idbPutMessages([optimistic]).catch(()=>{});
+  cacheOptimisticMedia(localId,imageFiles).catch(()=>{});
+
+  input.value="";input.style.height="auto";attachedImages=[];attachedFiles=[];
+  renderUploadQueue();renderMessages();
+  requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){try{input.focus()}catch(__){}}});
+
   (async()=>{
     try{
       const uploadedImages=[];
@@ -1289,21 +1320,41 @@ async function sendMessage(e){
       const fileDatas=[];
       for(const f of fileFiles)fileDatas.push(await uploadFile(f));
       const firstFile=fileDatas[0]||null;
-      const payload={senderUid:me.uid,text,imageUrls:uploadedImages,imageUrl:uploadedImages[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
-      if(activeFriend.isGroup){payload.groupId=activeFriend.uid;payload.groupMemberUids=activeFriend.memberUids||[];payload.groupMemberMap=Object.fromEntries((activeFriend.memberUids||[]).map(x=>[String(x),true]));}
-      else payload.receiverUid=activeFriend.uid;
+      const payload={
+        senderUid:me.uid,text,imageUrls:uploadedImages,imageUrl:uploadedImages[0]||"",
+        files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),
+        fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",
+        fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",
+        createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false
+      };
+      if(target.isGroup){
+        payload.groupId=target.uid;
+        payload.groupMemberUids=target.memberUids||[];
+        payload.groupMemberMap=Object.fromEntries((target.memberUids||[]).map(x=>[String(x),true]));
+      }else payload.receiverUid=target.uid;
+
       const ref=await MESSAGES().add(payload);
+      const saved={id:ref.id,...payload,createdAtMs:Date.now(),pending:false,conversationId};
       activeMessageMap.delete(localId);messageMap.delete(localId);
-      const saved={id:ref.id,...payload,createdAtMs:Date.now(),pending:false,conversationId:conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)};
-      messageMap.set(ref.id,saved);activeMessageMap.set(ref.id,saved);await idbPutMessages([saved]).catch(()=>{});cacheMessages();renderMessages();
+      activeMessageMap.set(ref.id,saved);messageMap.set(ref.id,saved);
+      await idbPutMessages([saved]).catch(()=>{});
+      cacheMessages();
+      (URLS_FOR_OPTIMISTIC.get(localId)||[]).forEach(u=>{try{URL.revokeObjectURL(u)}catch(_){}});URLS_FOR_OPTIMISTIC.delete(localId);
+      if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId)renderMessages();
       toast("Message sent");
     }catch(err){
       console.error("sendMessage",err);
-      const failed=activeMessageMap.get(localId);if(failed){failed.pendingFailed=true;failed.pending=false;renderMessages()}
-      toast(err.message==="Failed to fetch"?"Upload service blocked or offline":"Message পাঠানো যায়নি");
+      const failed=activeMessageMap.get(localId);
+      if(failed){
+        failed.pendingFailed=true;failed.pending=false;
+        await idbPutMessages([failed]).catch(()=>{});
+        if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId)renderMessages();
+      }
+      toast(err?.message==="Failed to fetch"?"Upload service blocked or offline":"Message পাঠানো যায়নি");
     }finally{
-      btn.disabled=false;
-      requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){input.focus()}});
+      if(activeFriend&&conversationIdFor(activeFriend.uid,!!activeFriend.isGroup)===conversationId){
+        requestAnimationFrame(()=>{try{input.focus({preventScroll:true})}catch(_){try{input.focus()}catch(__){}}});
+      }
     }
   })();
 }
@@ -1458,33 +1509,73 @@ async function fetchConversationPage(uid,isGroup,limit=25,beforeMs=Infinity){
   return items.sort((a,b)=>(a.createdAt?.toMillis?.()||a.createdAtMs||0)-(b.createdAt?.toMillis?.()||b.createdAtMs||0));
 }
 let warmChatTimer=null;
+const FM_WARM_PAGE_COUNT=2,FM_PREFETCH_PAGE_COUNT=3,FM_WARM_CONCURRENCY=3;
+const warmConversationLocks=new Set();
+
 function scheduleWarmFriendChats(){
   if(warmChatTimer)clearTimeout(warmChatTimer);
-  warmChatTimer=setTimeout(()=>{warmFriendChats().catch(e=>console.warn("warm chat cache",e))},300);
+  warmChatTimer=setTimeout(()=>warmFriendChats().catch(e=>console.warn("warm chat cache",e)),120);
+}
+function localConversationMessages(uid,isGroup=false){
+  const cid=conversationIdFor(uid,isGroup);
+  return [...messageMap.values()].map(normalizeLocalMessage)
+    .filter(m=>m.conversationId===cid)
+    .sort((a,b)=>(a.createdAtMs||0)-(b.createdAtMs||0));
+}
+async function warmOneConversation(t){
+  if(!me||!t.uid)return;
+  const lock=`${t.isGroup?"g":"f"}:${t.uid}`;
+  if(warmConversationLocks.has(lock))return;
+  warmConversationLocks.add(lock);
+  try{
+    const cid=conversationIdFor(t.uid,t.isGroup);
+    let local=localConversationMessages(t.uid,t.isGroup);
+    if(local.length<messagePageSize*FM_WARM_PAGE_COUNT&&navigator.onLine){
+      const remote=await fetchConversationPage(t.uid,t.isGroup,messagePageSize*FM_WARM_PAGE_COUNT,Infinity);
+      const map=new Map([...local,...remote].map(m=>[m.id,m]));
+      local=[...map.values()].sort((a,b)=>(a.createdAtMs||0)-(b.createdAtMs||0));
+    }
+    const warm=local.slice(-messagePageSize*FM_WARM_PAGE_COUNT);
+    if(warm.length){
+      await idbPutMessages(warm);
+      await idbSetMeta("warm_"+cid,{at:Date.now(),oldest:warm[0].createdAtMs||0,newest:warm[warm.length-1].createdAtMs||0});
+      preloadMessageMedia(warm).catch(()=>{});
+    }
+  }catch(e){console.warn("warm chat cache",t.uid,e)}
+  finally{warmConversationLocks.delete(lock)}
 }
 async function warmFriendChats(){
-  if(!me||!navigator.onLine)return;
-  const targets=[...friends.map(f=>({uid:f.friendUid,isGroup:false})),...groups.map(g=>({uid:g.id,isGroup:true}))];
-  const concurrency=2;let index=0;
-  const worker=async()=>{while(index<targets.length){const t=targets[index++];try{const cid=conversationIdFor(t.uid,t.isGroup);const newest=await fetchConversationPage(t.uid,t.isGroup,messagePageSize*2,Infinity);await idbSetMeta("warm_"+cid,{at:Date.now(),oldest:newest[0]?.createdAtMs||newest[0]?.createdAt?.toMillis?.()||0});}catch(e){console.warn("warm chat cache",t.uid,e)}}};
-  await Promise.all(Array.from({length:Math.min(concurrency,targets.length)},worker));
-  if(activeFriend)await renderLocalMessages(conversationIdFor(activeFriend.uid,activeFriend.isGroup),messagePageSize*2);
+  if(!me)return;
+  const targets=[...friends.map(f=>({uid:f.friendUid,isGroup:false})),...groups.map(g=>({uid:g.id,isGroup:true}))].filter(t=>t.uid);
+  let index=0;
+  const worker=async()=>{
+    while(index<targets.length){
+      await warmOneConversation(targets[index++]);
+      await new Promise(r=>setTimeout(r,0));
+    }
+  };
+  await Promise.all(Array.from({length:Math.min(FM_WARM_CONCURRENCY,targets.length)},worker));
+  if(activeFriend)await renderLocalMessages(conversationIdFor(activeFriend.uid,!!activeFriend.isGroup),messagePageSize*FM_WARM_PAGE_COUNT);
 }
 async function prefetchNextPages(uid,isGroup,beforeMs){
   if(!navigator.onLine||!beforeMs)return;
+  const cid=conversationIdFor(uid,isGroup),key=`prefetch_${cid}_${beforeMs}`;
+  if(await idbGetMeta(key))return;
   try{
-    const items=await fetchConversationPage(uid,isGroup,messagePageSize*3,beforeMs);
-    if(items.length)await idbSetMeta("prefetch_"+conversationIdFor(uid,isGroup),{at:Date.now(),oldest:items[0].createdAtMs||items[0].createdAt?.toMillis?.()||0});
+    const items=await fetchConversationPage(uid,isGroup,messagePageSize*FM_PREFETCH_PAGE_COUNT,beforeMs);
+    if(items.length){
+      await idbSetMeta(key,{at:Date.now(),oldest:items[0].createdAtMs||0,count:items.length});
+      preloadMessageMedia(items).catch(()=>{});
+    }
   }catch(e){console.warn("prefetch chat history",e)}
 }
 function triggerHistoryPrefetch(){
   if(!activeFriend||!oldestLoadedCreatedAt||historyPrefetchBusy)return;
   const loadedCount=document.querySelectorAll("#messages .msg-row").length;
-  if(loadedCount<=messagePageSize*2)return;
+  if(loadedCount<messagePageSize*FM_WARM_PAGE_COUNT)return;
   historyPrefetchBusy=true;
   prefetchNextPages(activeFriend.uid,!!activeFriend.isGroup,oldestLoadedCreatedAt).finally(()=>historyPrefetchBusy=false);
 }
-
 async function idbGetMeta(key){const x=await idbGet(FM_STORES.meta,key);return x?.value}
 function normalizeLocalMessage(m){
   return {...m,
@@ -1501,20 +1592,31 @@ async function renderLocalMessages(conversationId,limit=25,beforeMs=Infinity,kee
   const local=await idbMessages(conversationId,limit,beforeMs);
   if(conversationId!==currentConversationId)return local;
   oldestLoadedCreatedAt=local.length?local[0].createdAtMs:0;
-  if(local.length)await preloadMessageMedia(local).catch(()=>{});
   renderMessagesFromPlain(local,keepPosition);
+  preloadMessageMedia(local).then(()=>hydrateRenderedMedia()).catch(()=>{});
   return local;
 }
 function renderMessagesFromPlain(items,keepPosition=false){
   const box=$("messages");if(!box)return;
   const oldHeight=box.scrollHeight,oldTop=box.scrollTop;
+  const wasNearBottom=oldHeight-oldTop-box.clientHeight<90;
   if(!items.length){
     box.innerHTML='<div class="empty-state"><i class="fa-regular fa-comments"></i><b>No messages yet</b><span>Start the conversation.</span></div>';
     return;
   }
   box.innerHTML=items.map(m=>messageHTML(m)).join("");
-  if(keepPosition)box.scrollTop=Math.max(0,box.scrollHeight-oldHeight+oldTop);
-  else box.scrollTop=box.scrollHeight;
+  requestAnimationFrame(()=>{
+    if(keepPosition)box.scrollTop=Math.max(0,box.scrollHeight-oldHeight+oldTop);
+    else if(wasNearBottom||oldHeight===0)box.scrollTop=box.scrollHeight;
+    else box.scrollTop=oldTop;
+  });
+}
+function hydrateRenderedMedia(){
+  const box=$("messages");if(!box)return;
+  box.querySelectorAll("img[data-media-url]").forEach(img=>{
+    const raw=img.getAttribute("data-media-url"),cached=mediaObjectUrls.get(raw);
+    if(cached&&img.src!==cached)img.src=cached;
+  });
 }
 async function loadOlderLocalMessages(){
   if(!currentConversationId||!oldestLoadedCreatedAt||historyLoadBusy)return;
@@ -1969,12 +2071,10 @@ document.addEventListener("DOMContentLoaded",async()=>{
   updateConnectivity();
   const box=$("messages");
   if(box)box.addEventListener("scroll",()=>{
-    if(box.scrollTop<90 && activeFriend&&!syncInProgress){
-      const conversationId=activeFriend.isGroup?activeFriend.uid:pair(me.uid,activeFriend.uid);
-      if(conversationId&&oldestLoadedCreatedAt)loadOlderLocalMessages();
-      triggerHistoryPrefetch();
-    }
-  });
+    if(!activeFriend||syncInProgress)return;
+    if(box.scrollTop<110&&oldestLoadedCreatedAt)loadOlderLocalMessages();
+    if(box.scrollTop<Math.max(420,box.clientHeight*1.6))triggerHistoryPrefetch();
+  },{passive:true});
 });
 
 
