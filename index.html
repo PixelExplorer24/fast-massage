@@ -19,8 +19,11 @@
 <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.24.0.js"></script>
 <style id="messenger-theme-background">
 :root{--messenger-theme-bg:url("./assets/theme-background.webp");}
-html,body{min-height:100%;background:#eef8ff var(--messenger-theme-bg) center center/cover fixed no-repeat !important;}
+html,body{min-height:100%;background:#eef8ff var(--messenger-theme-bg) center center/cover fixed no-repeat !important;background-attachment:fixed !important;}
 body.dark{background:#0b1220 var(--messenger-theme-bg) center center/cover fixed no-repeat !important;}
+/* The theme image is the single visual canvas: no separate header/card background. */
+.topbar{background:transparent !important;background-color:transparent !important;border:0 !important;box-shadow:none !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important;}
+.topbar-inner{background:transparent !important;}
 .app,.main,.view,.hero-head,.search-wrap,.people-tabs,.people-list,.chat-list,.profile-page,.profile-main,.profile-cover,.settings-page,.settings-section,.settings-item,.settings-head,.support-note{background:transparent !important;background-color:transparent !important;backdrop-filter:none !important;box-shadow:none !important;}
 .view{border:0 !important;}
 .hero-head h2,.hero-head p,.settings-head h2,.settings-section h3,.profile-main h2,.profile-main p,.settings-copy,.settings-label,.support-note,.chatSummary{background:transparent !important;}
@@ -31,12 +34,17 @@ body.dark .chat-item:hover,body.dark .person-item:hover,body.dark .settings-item
 .chat-panel{background:rgba(255,255,255,.08) !important;backdrop-filter:blur(2px) !important;}
 body.dark .chat-panel{background:rgba(0,0,0,.10) !important;}
 .messages{background:transparent !important;}
-@media(max-width:700px){html,body{background-position:center top;background-attachment:scroll !important;}.view{background:transparent !important;}}
-
 .logo-orbit,.brand-icon{overflow:hidden}
 .logo-orbit img,.brand-icon img{width:100%;height:100%;display:block;object-fit:cover;border-radius:inherit}
 .logo-orbit img{border-radius:24px}
 .brand-icon img{border-radius:inherit}
+@media(max-width:700px){
+  html,body{background-position:center top;background-attachment:scroll !important;background-size:cover !important;}
+  body{padding-top:0 !important;}
+  .topbar{padding-top:env(safe-area-inset-top);}
+  .topbar-inner{height:72px;}
+  .view{background:transparent !important;}
+}
 </style>
 </head>
 <body class="booting">
