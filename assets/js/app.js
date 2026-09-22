@@ -625,6 +625,12 @@ function stopListeners(){
 function startListeners(){
   stopListeners();
   friendsSyncReady=false;groupsSyncReady=false;messagesSyncReady=false;
+
+  // Always render the Home chat list immediately from the current in-memory/local
+  // state. Firebase realtime listeners below will render again when their first
+  // snapshots arrive. This prevents the Home UI from depending on the search box.
+  hydrateLocalCache();
+  renderChats();
   // The RTDB compatibility layer reads collection roots and filters client-side.
   // Keep ONE realtime listener per collection so the home chat list, people list,
   // groups and messages all update immediately without a manual refresh.
@@ -634,6 +640,8 @@ function startListeners(){
         console.warn(`${label} realtime listener`,err);
         // Keep the cached UI alive when a transient RTDB permission/network error occurs.
         hydrateLocalCache();
+        // Never require a search-key event to repaint Home after a Firebase error.
+        renderChats();
       });
       if(typeof unsub==="function")listUnsubs.push(unsub);
     }catch(err){
@@ -687,10 +695,26 @@ function startListeners(){
   safeListen("messages",MESSAGES(),s=>{
     const all=s.docs.map(d=>({id:d.id,...d.data()}));
     const mine=all.filter(m=>m.senderUid===me.uid||m.receiverUid===me.uid||(Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(id=>String(id)===String(me.uid))));
+
+    // Replace the message state with the complete Firebase snapshot, including
+    // the FIRST snapshot received after a page refresh.
     messageMap=new Map(mine.map(m=>[m.id,m]));
     messagesSyncReady=true;
-    cacheMessages();const rooms=buildChatRoomCache();if(rooms.length)saveLocal("chatRooms",rooms);renderChats();updateStats();if(activeFriend)renderMessages();
+
+    cacheMessages();
+    const rooms=buildChatRoomCache();
+    if(rooms.length)saveLocal("chatRooms",rooms);
+
+    // Critical: the first Firebase snapshot must immediately paint the Home UI.
+    // Do not wait for chatSearch.oninput or another user interaction.
+    renderChats();
+    updateStats();
+    if(activeFriend)renderMessages();
   });
+
+  // Final synchronous paint after all listeners have been attached. This also
+  // covers the case where Firebase callbacks are delayed by network startup.
+  renderChats();
 }
 function cacheKey(name){return CACHE_PREFIX+name+(me?"_"+me.uid:"")}
 function persistentChatRoomsKey(){return me?`${PERSISTENT_ROOMS_PREFIX}${me.uid}`:""}
@@ -827,7 +851,11 @@ function callDurationPreview(m){
 }
 function renderChats(){
   if(!me)return;
-  const q=($("chatSearch")?.value||"").trim().toLowerCase();
+
+  // Empty/whitespace search means "show all chats". Never let an empty
+  // search value filter the list or prevent the initial render.
+  const searchValue=$("chatSearch")?.value;
+  const q=String(searchValue==null?"":searchValue).trim().toLowerCase();
   const all=[...messageMap.values()].sort((a,b)=>(b.createdAt?.toMillis?.()||Number(b.createdAt)||0)-(a.createdAt?.toMillis?.()||Number(a.createdAt)||0));
   const by=new Map();
   for(const m of all){
@@ -844,7 +872,13 @@ function renderChats(){
   const roomFriends=friends.length?friends:(cachedFriends.length?cachedFriends:registryFriends);
   roomFriends.forEach(f=>{if(f.friendUid&&!by.has(f.friendUid))by.set(f.friendUid,null)});
   let rows=[...by.entries()].map(([uid,m])=>({uid,m,u:users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid)||{uid,displayName:"User"}}));
-  if(q)rows=rows.filter(r=>(r.u.displayName||"").toLowerCase().includes(q)||(r.u.email||"").toLowerCase().includes(q)||(r.m?.text||"").toLowerCase().includes(q));
+  if(q.length>0){
+    rows=rows.filter(r=>
+      String(r.u.displayName||"").toLowerCase().includes(q)||
+      String(r.u.email||"").toLowerCase().includes(q)||
+      String(r.m?.text||"").toLowerCase().includes(q)
+    );
+  }
   const box=$("chatList");
   const groupRows=groups.filter(g=>!q||(g.name||"").toLowerCase().includes(q)).map(g=>{
     const m=[...messageMap.values()].filter(x=>x.groupId===g.id).sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0))[0];
