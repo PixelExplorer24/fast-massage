@@ -541,6 +541,37 @@ function installCallMessageStyles(){
 }
 installCallMessageStyles();
 
+function installChatRoomThemeStyles(){
+  if($('chatRoomThemeStyles'))return;
+  const st=document.createElement('style');st.id='chatRoomThemeStyles';st.textContent=`
+    #chatPanel{position:fixed;inset:0;isolation:isolate;overflow:hidden;background:transparent!important}
+    #chatPanel::before{
+      content:"";position:absolute;inset:-14px;z-index:-2;
+      background-image:var(--fm-chat-theme-image,none);
+      background-size:cover;background-position:center;background-repeat:no-repeat;
+      filter:blur(7px);transform:scale(1.035);opacity:.92;
+    }
+    #chatPanel::after{
+      content:"";position:absolute;inset:0;z-index:-1;
+      background:rgba(255,255,255,.18);pointer-events:none;
+    }
+    #chatPanel>*{position:relative;z-index:1}
+    html.dark #chatPanel::after{background:rgba(7,12,20,.30)}
+  `;document.head.appendChild(st);
+}
+function syncChatRoomTheme(){
+  const panel=$('chatPanel');if(!panel)return;
+  const sources=[$('homeView'),document.body,document.documentElement].filter(Boolean);
+  let bg='none';
+  for(const el of sources){
+    const value=getComputedStyle(el).backgroundImage;
+    if(value&&value!=='none'&&value.includes('url(')){bg=value;break}
+  }
+  panel.style.setProperty('--fm-chat-theme-image',bg);
+}
+installChatRoomThemeStyles();
+window.addEventListener('load',syncChatRoomTheme,{once:true});
+
 // ===== SPA back navigation =====
 // Internal screens use a hash sub-link so browser Back stays inside the app
 // instead of leaving the GitHub Pages app.
@@ -1178,6 +1209,7 @@ async function openChat(uid){
   try{await idbOpen()}catch(e){console.warn("local message store unavailable",e)}
   activeFriend=u;
   setChatHeader(u);
+  syncChatRoomTheme();
   if(!routeSyncing)pushAppRoute("chat/"+encodeURIComponent(uid));
   $("chatPanel").classList.remove("hidden");
   document.body.style.overflow="hidden";
@@ -1191,7 +1223,7 @@ async function openGroupChat(groupId){
   currentConversationId=groupId;
   const g=groups.find(x=>x.id===groupId);if(!g)return toast("গ্রুপ পাওয়া যায়নি");
   if(!(g.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
-  await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};setChatHeader(activeFriend);if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();await renderMessages()
+  await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();await renderMessages()
 }
 function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];renderUploadQueue();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
 function watchTyping(){if(typingUnsub)typingUnsub();if(!activeFriend||activeFriend.isGroup){$("typing").classList.add("hidden");return}typingUnsub=USERS().doc(activeFriend.uid).onSnapshot(s=>{$("typing").classList.toggle("hidden",(s.data()||{}).typingTo!==me.uid)})}
