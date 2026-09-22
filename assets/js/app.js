@@ -891,7 +891,87 @@ function callDurationPreview(m){
   if(m.callOutcome==="completed")return `${type} · ${callDurationText(m.callDurationMs||0)}`;
   return `মিসড ${type}`;
 }
+function ensureUnreadChatStyles(){
+  if(document.getElementById("fm-unread-chat-styles"))return;
+  const style=document.createElement("style");
+  style.id="fm-unread-chat-styles";
+  style.textContent=`
+    .chat-item.unread-chat{
+      background:rgba(93, 173, 255, .16) !important;
+      background-color:rgba(93, 173, 255, .16) !important;
+      border-color:rgba(67, 153, 239, .28) !important;
+    }
+    .chat-item.unread-chat:hover{
+      background:rgba(93, 173, 255, .23) !important;
+    }
+    .chat-item .unread-badge{
+      flex:0 0 auto;
+      min-width:23px;
+      height:23px;
+      padding:0 7px;
+      margin-left:8px;
+      border-radius:999px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      background:#2196f3;
+      color:#fff;
+      font-size:11px;
+      font-weight:800;
+      line-height:1;
+      box-shadow:0 2px 8px rgba(33,150,243,.28);
+    }
+    .chat-item.unread-chat .item-copy strong{font-weight:800}
+    .chat-item .item-meta{margin-left:auto}
+    .chat-item .unread-badge + .item-meta{margin-left:4px}
+  `;
+  document.head.appendChild(style);
+}
+
+function isUnreadMessage(m){
+  if(!m||m.groupId||!me)return false;
+  if(String(m.senderUid)!==String(me.uid)){
+    return m.seen!==true && m.read!==true;
+  }
+  return false;
+}
+
+function getUnreadCount(uid){
+  if(!uid||!me)return 0;
+  let count=0;
+  messageMap.forEach(m=>{
+    if(String(m.senderUid)===String(uid) && String(m.receiverUid)===String(me.uid) && isUnreadMessage(m))count++;
+  });
+  return count;
+}
+
+async function markConversationRead(uid){
+  if(!me||!uid)return;
+  const unread=[];
+  messageMap.forEach((m,id)=>{
+    if(String(m.senderUid)===String(uid) && String(m.receiverUid)===String(me.uid) && isUnreadMessage(m)){
+      const next={...m,seen:true,read:true,readAt:Date.now()};
+      messageMap.set(id,next);
+      unread.push(id);
+    }
+  });
+  if(!unread.length){renderChats();return;}
+
+  cacheMessages();
+  try{await idbPutMessages(unread.map(id=>messageMap.get(id)));}catch(e){console.warn("local read state update",e)}
+  renderChats();
+
+  await Promise.all(unread.map(async id=>{
+    try{
+      await MESSAGES().doc(id).update({seen:true,read:true,readAt:firebase.firestore.FieldValue.serverTimestamp()});
+    }catch(e){
+      console.warn("message read-state sync",id,e);
+    }
+  }));
+}
+
 function renderChats(){
+  ensureUnreadChatStyles();
   if(!me)return;
 
   // Empty/whitespace search means "show all chats". Never let an empty
@@ -940,7 +1020,10 @@ function renderChats(){
   }).join("");
   const personal=rows.map(r=>{
     const preview=r.m?.type==="call"?((r.m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(r.m)):r.m?.text||((r.m?.imageUrls||[]).length?"📷 Image":r.m?.fileName?"📎 "+r.m.fileName:"Start a conversation");
-    return `<button class="chat-item" onclick="openChat('${esc(r.uid)}')"><img class="avatar" src="${esc(avatar(r.u))}"><span class="item-copy"><strong>${esc(r.u.displayName||r.u.email||"User")}</strong><small>${esc(preview)}</small></span><time class="item-meta">${r.m?time(r.m.createdAt):"Friend"}</time></button>`;
+    const unreadCount=getUnreadCount(r.uid);
+    const unreadClass=unreadCount>0?" unread-chat":"";
+    const badge=unreadCount>0?`<span class="unread-badge" aria-label="${unreadCount} unread messages">${unreadCount>99?"99+":unreadCount}</span>`:"";
+    return `<button class="chat-item${unreadClass}" data-chat-uid="${esc(r.uid)}" onclick="openChat('${esc(r.uid)}')"><img class="avatar" src="${esc(avatar(r.u))}"><span class="item-copy"><strong>${esc(r.u.displayName||r.u.email||"User")}</strong><small>${esc(preview)}</small></span>${badge}<time class="item-meta">${r.m?time(r.m.createdAt):"Friend"}</time></button>`;
   }).join("");
   box.innerHTML=groupRows+personal||`<div class="empty"><i class="fa-regular fa-comments" style="font-size:28px;display:block;margin-bottom:10px"></i>কোনো conversation নেই। People থেকে একজনকে বেছে নিয়ে chat শুরু করুন।</div>`;
   const snapshot=buildChatRoomCache();
@@ -1101,6 +1184,8 @@ async function openChat(uid){
   subscribeChat(uid);
   watchTyping();
   renderMessages();
+  // Opening a personal conversation is the explicit read action.
+  if(!activeFriend.isGroup)await markConversationRead(uid);
 }
 async function openGroupChat(groupId){
   currentConversationId=groupId;
