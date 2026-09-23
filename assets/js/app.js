@@ -1348,7 +1348,7 @@ function messageHTML(m){
       const prefetched=!!m.fmPrefetched;
       return prefetched
         ? `<img class="msg-img fm-prefetched-image" data-image-url="${esc(u)}" src="${esc(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" title="Original image download করতে ক্লিক করুন" onclick="downloadOriginalImage(this.dataset.imageUrl)">`
-        : `<img class="msg-img" data-image-url="${esc(u)}" src="${esc(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="showImage('${esc(u)}')">`;
+        : `<img class="msg-img" data-image-url="${esc(u)}" src="${esc(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="event.stopPropagation();showImage('${esc(u)}')">`;
     }).join("")}
     ${uniqueFiles.map(f=>`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
     ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button>${delBtn}</div></div>
@@ -1386,7 +1386,7 @@ function renderMessages(){
       ${activeFriend.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(users.find(u=>u.uid===m.senderUid)?.displayName||"Member")}</div>`:""}
       ${replyQuoteHTML(m)}
       ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-      ${imgs.map(u=>`<div class="media-bubble ${m.localPending?"media-pending":""}"><img class="msg-img" data-image-url="${escUrl(u)}" src="${escUrl(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="showImage('${escUrl(u)}')"><div class="media-overlay-actions"><button type="button" title="Zoom" onclick="event.stopPropagation();showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button><button type="button" title="Download" onclick="event.stopPropagation();downloadOriginalImage('${escUrl(u)}')"><i class="fa-solid fa-download"></i></button></div>${m.localPending?`<span class="media-uploading"><i class="fa-solid fa-spinner fa-spin"></i> Uploading…</span>`:""}</div>`).join("")}
+      ${imgs.map(u=>`<div class="media-bubble ${m.localPending?"media-pending":""}"><img class="msg-img" data-image-url="${escUrl(u)}" src="${escUrl(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="event.stopPropagation();showImage('${escUrl(u)}')"><div class="media-overlay-actions"><button type="button" title="Zoom" onclick="event.stopPropagation();showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button><button type="button" title="Download" onclick="event.stopPropagation();downloadOriginalImage('${escUrl(u)}')"><i class="fa-solid fa-download"></i></button></div>${m.localPending?`<span class="media-uploading"><i class="fa-solid fa-spinner fa-spin"></i> Uploading…</span>`:""}</div>`).join("")}
       ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-download file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"File")}</b><small>${esc(f.size?bytes(f.size):"File")} • Uploading…</small></span><i class="fa-solid fa-spinner fa-spin file-download"></i></div>`).join("")}
       ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(m.createdAt)}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button><button class="msg-delete-btn" type="button" title="Delete message" onclick="event.stopPropagation();deleteMessage('${esc(m.id||"")}')"><i class="fa-solid fa-trash-can"></i></button></div></div>
     </div></div>`;
@@ -1920,8 +1920,12 @@ function showImage(url){
   ensureImageViewer();
   fmViewerSourceUrl=url;
   const viewer=$('fmImageViewer'),img=$('fmViewerImage');
+  // The viewer always uses its own image element. Never modify, move, resize,
+  // or reuse the original image element inside the chat message.
+  const source=fmImageObjectUrls.get(url)||url;
   try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
-  img.src=fmImageObjectUrls.get(url)||url;
+  img.removeAttribute('style');
+  img.src=source;
   img.dataset.sourceUrl=url;
   viewer.classList.remove('hidden');
   document.body.classList.add('fm-viewer-open');
