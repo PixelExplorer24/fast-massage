@@ -71,8 +71,8 @@ body.dark .chat-panel{background:rgba(0,0,0,.10) !important;}
 }
 
 /* Optimistic media UI + image viewer */
-.media-bubble{position:relative;display:inline-block;max-width:min(78vw,360px);margin-top:5px;border-radius:14px;overflow:hidden;background:rgba(0,0,0,.12)}
-.media-bubble .msg-img{display:block;flex:0 0 auto;max-width:min(78vw,360px);max-height:360px;width:auto!important;height:auto!important;min-width:0;min-height:0;object-fit:contain;cursor:zoom-in}
+.media-bubble{position:relative;display:inline-block;max-width:100%;margin-top:5px;border-radius:14px;overflow:visible;background:rgba(0,0,0,.12)}
+.media-bubble .msg-img{display:block;flex:0 0 auto;max-width:100%;max-height:none;width:auto!important;height:auto!important;min-width:0;min-height:0;object-fit:contain;cursor:zoom-in}
 .media-overlay-actions{position:absolute;right:7px;bottom:7px;display:flex;gap:6px;opacity:0;transition:opacity .18s ease}
 .media-bubble:hover .media-overlay-actions,.media-bubble:focus-within .media-overlay-actions{opacity:1}
 .media-overlay-actions button{width:34px;height:34px;border:0;border-radius:50%;background:rgba(0,0,0,.68);color:#fff;cursor:pointer;backdrop-filter:blur(5px)}
@@ -87,10 +87,10 @@ body.dark .chat-panel{background:rgba(0,0,0,.10) !important;}
 .fm-image-viewer-close{position:absolute;right:18px;top:calc(18px + env(safe-area-inset-top));z-index:5;width:44px;height:44px;border:1px solid rgba(255,255,255,.28);border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.12);color:#fff;font-size:20px;line-height:1;cursor:pointer;pointer-events:auto;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);box-shadow:0 8px 30px rgba(0,0,0,.28);transition:background .18s ease,transform .18s ease,border-color .18s ease}
 .fm-image-viewer-close:hover{background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.5);transform:scale(1.05)}
 .fm-image-viewer-close:active{transform:scale(.95)}
-.fm-image-stage{position:relative;flex:1;width:100%;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;touch-action:none;pointer-events:auto;user-select:none;-webkit-user-select:none;overscroll-behavior:contain}
-.fm-panzoom-wrap{display:flex;align-items:center;justify-content:center;flex:0 0 auto;transform-origin:50% 50%;will-change:transform;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}
+.fm-image-stage{position:relative;flex:1;width:100%;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;touch-action:none;pointer-events:auto;user-select:none;-webkit-user-select:none;overscroll-behavior:contain;isolation:isolate;contain:strict}
+.fm-panzoom-wrap{position:relative;display:flex;align-items:center;justify-content:center;flex:0 0 auto;width:max-content;height:max-content;max-width:none;max-height:none;transform-origin:50% 50%;will-change:transform;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none;backface-visibility:hidden;-webkit-backface-visibility:hidden}
 .fm-panzoom-wrap.is-dragging{cursor:grabbing}
-.fm-panzoom-wrap img{display:block;max-width:92vw;max-height:88vh;width:auto;height:auto;object-fit:contain;pointer-events:none;user-select:none;-webkit-user-drag:none;-webkit-user-select:none}
+.fm-panzoom-wrap img{display:block;max-width:92vw;max-height:88vh;width:auto;height:auto;object-fit:contain;flex:0 0 auto;pointer-events:none;user-select:none;-webkit-user-drag:none;-webkit-user-select:none}
 .fm-image-viewer-hint{position:absolute;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:3;color:rgba(255,255,255,.78);font-size:12px;background:rgba(0,0,0,.4);padding:7px 11px;border-radius:999px;pointer-events:none;white-space:nowrap}
 body.fm-viewer-open{overflow:hidden!important;overscroll-behavior:none;touch-action:none}
 @media(max-width:700px){.fm-panzoom-wrap img{max-width:96vw;max-height:88vh}.fm-image-viewer-hint{font-size:11px;bottom:calc(12px + env(safe-area-inset-bottom))}}
@@ -410,7 +410,7 @@ body.fm-viewer-open{overflow:hidden!important;overscroll-behavior:none;touch-act
 </div></div>
 
 <div id="lightbox" class="lightbox hidden"><button id="closeLightbox"><i class="fa-solid fa-xmark"></i></button><img id="lightboxImg" alt=""></div>
-<script src="./assets/js/app.js?v=10"></script>
+<script src="./assets/js/app.js?v=12"></script>
 <script>
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
