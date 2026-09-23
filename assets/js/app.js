@@ -728,6 +728,7 @@ function startListeners(){
       friendsSyncReady=false;
     }
     renderPeople();renderGroups();renderChats();updateStats();
+    scheduleWarmFriendChatCaches();
   });
 
   safeListen("friendRequests",REQUESTS(),s=>{
@@ -749,6 +750,7 @@ function startListeners(){
     }
     const rooms=buildChatRoomCache();if(rooms.length)saveLocal("chatRooms",rooms);
     renderGroups();renderChats();
+    scheduleWarmFriendChatCaches();
   });
 
   safeListen("messages",MESSAGES(),s=>{
@@ -1254,7 +1256,12 @@ function messageHTML(m){
   return `<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">
     ${activeFriend?.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(senderName)}</div>`:""}
     ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-    ${imgs.map(u=>`<img class="msg-img" src="${esc(u)}" onclick="showImage('${esc(u)}')">`).join("")}
+    ${imgs.map(u=>{
+      const prefetched=!!m.fmPrefetched;
+      return prefetched
+        ? `<img class="msg-img fm-prefetched-image" data-image-url="${esc(u)}" src="${esc(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" title="Original image download করতে ক্লিক করুন" onclick="downloadOriginalImage(this.dataset.imageUrl)">`
+        : `<img class="msg-img" data-image-url="${esc(u)}" src="${esc(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="showImage('${esc(u)}')">`;
+    }).join("")}
     ${uniqueFiles.map(f=>`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
     <div class="msg-footer"><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div>${delBtn}</div>
   </div></div>`;
@@ -1279,6 +1286,8 @@ function renderMessages(){
   const arr=[...activeMessageMap.values()].sort((x,y)=>(x.createdAt?.toMillis?.()||Number(x.createdAt)||0)-(y.createdAt?.toMillis?.()||Number(y.createdAt)||0));
   const box=$("messages");
   const escUrl=u=>esc(u||"");
+  const oldHeight=box.scrollHeight,oldTop=box.scrollTop;
+  const wasAtBottom=(oldHeight-box.clientHeight-oldTop)<72 || oldHeight===0;
   box.innerHTML=arr.length?arr.map(m=>{
     if(m.type==="call")return `<div class="msg-row ${m.senderUid===me.uid?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
     const mine=m.senderUid===me.uid,imgs=m.imageUrls||[];
@@ -1288,19 +1297,20 @@ function renderMessages(){
     return`<div class="msg-row ${mine?"mine":"theirs"}"><div class="bubble">
       ${activeFriend.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(users.find(u=>u.uid===m.senderUid)?.displayName||"Member")}</div>`:""}
       ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-      ${imgs.map(u=>`<img class="msg-img" src="${escUrl(u)}" onclick="showImage('${escUrl(u)}')">`).join("")}
-      ${uniqueFiles.map(f=>`<a class="file-card" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
+      ${imgs.map(u=>`<div class="media-bubble ${m.localPending?"media-pending":""}"><img class="msg-img" data-image-url="${escUrl(u)}" src="${escUrl(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="showImage('${escUrl(u)}')"><div class="media-overlay-actions"><button type="button" title="Zoom" onclick="event.stopPropagation();showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button><button type="button" title="Download" onclick="event.stopPropagation();downloadOriginalImage('${escUrl(u)}')"><i class="fa-solid fa-download"></i></button></div>${m.localPending?`<span class="media-uploading"><i class="fa-solid fa-spinner fa-spin"></i> Uploading…</span>`:""}</div>`).join("")}
+      ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-download file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"File")}</b><small>${esc(f.size?bytes(f.size):"File")} • Uploading…</small></span><i class="fa-solid fa-spinner fa-spin file-download"></i></div>`).join("")}
       <div class="msg-time">${time(m.createdAt)}</div>
     </div></div>`;
   }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
-  box.scrollTop=box.scrollHeight;
+  if(wasAtBottom)box.scrollTop=box.scrollHeight;
+  else box.scrollTop=Math.max(0,oldTop+(box.scrollHeight-oldHeight));
 }
 function subscribeChat(uid){
   chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];
   activeMessageMap=new Map([...messageMap.values()].filter(m=>activeFriend?.isGroup?m.groupId===uid:((m.senderUid===me.uid&&m.receiverUid===uid)||(m.senderUid===uid&&m.receiverUid===me.uid))).map(m=>[m.id,m]));
   renderMessages();
   const ref=MESSAGES();
-  const mergeSnap=s=>{s.docs.forEach(d=>activeMessageMap.set(d.id,{id:d.id,...d.data()}));renderMessages();};
+  const mergeSnap=s=>{const items=s.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()}));items.forEach(m=>{activeMessageMap.set(m.id,m);messageMap.set(m.id,m)});idbPutMessages(items).catch(()=>{});preloadMessageImages(items).catch(()=>{});renderMessages();hydrateRenderedMessageImages(items).catch(()=>{});};
   if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(mergeSnap));}
   else{
     chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(mergeSnap));
@@ -1317,6 +1327,10 @@ async function openChat(uid){
   currentConversationId=pair(me.uid,uid);
   try{await idbOpen()}catch(e){console.warn("local message store unavailable",e)}
   activeFriend=u;
+  historyPage=1;historyNoMore=false;historyPrefetchBusy=false;oldestLoadedCreatedAt=0;
+  // Offline-first: paint the most recent locally cached messages immediately.
+  const localConversationId=pair(me.uid,uid);
+  renderLocalMessages(localConversationId,FM_WARM_MESSAGE_LIMIT).catch(()=>renderMessages());
   setChatHeader(u);
   syncChatRoomTheme();
   if(!routeSyncing)pushAppRoute("chat/"+encodeURIComponent(uid));
@@ -1332,7 +1346,11 @@ async function openGroupChat(groupId){
   currentConversationId=groupId;
   const g=groups.find(x=>x.id===groupId);if(!g)return toast("গ্রুপ পাওয়া যায়নি");
   if(!(g.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
-  await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();await renderMessages()
+  await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};
+  historyPage=1;historyNoMore=false;historyPrefetchBusy=false;oldestLoadedCreatedAt=0;
+  // Group cache uses a dedicated conversation key so it survives refresh.
+  renderLocalMessages(`group:${groupId}`,FM_WARM_MESSAGE_LIMIT).catch(()=>renderMessages());
+  setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();await renderMessages()
 }
 function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];renderUploadQueue();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
 function watchTyping(){if(typingUnsub)typingUnsub();if(!activeFriend||activeFriend.isGroup){$("typing").classList.add("hidden");return}typingUnsub=USERS().doc(activeFriend.uid).onSnapshot(s=>{$("typing").classList.toggle("hidden",(s.data()||{}).typingTo!==me.uid)})}
@@ -1363,34 +1381,71 @@ function renderUploadQueue(){
   </div>`).join("");
 }
 async function sendMessage(e){
-  e.preventDefault();if(!activeFriend||!me)return;
-  const input=$("messageInput"),text=input.value.trim();
-  if(!text&&!attachedImages.length&&!attachedFiles.length)return;
+  if(e?.preventDefault)e.preventDefault();
+  if(!activeFriend||!me)return;
+  const input=$("messageInput");
+  const keepComposerFocus=document.activeElement===input || !!input?.matches?.(":focus");
+  const selectionStart=input?.selectionStart ?? null;
+  const selectionEnd=input?.selectionEnd ?? null;
+  const text=input.value.trim();
+  const imageFiles=[...attachedImages];
+  const fileFiles=[...attachedFiles];
+  if(!text&&!imageFiles.length&&!fileFiles.length)return;
   if(!activeFriend.isGroup && !isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ হতে হবে, তারপর message পাঠাতে পারবেন");
   if(activeFriend.isGroup && !(activeFriend.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
-  const btn=document.querySelector(".send-btn");btn.disabled=true;
+
+  const btn=document.querySelector(".send-btn");
+  btn.disabled=true;
+  const pendingId=`pending_${me.uid}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  const localImageUrls=imageFiles.map(f=>URL.createObjectURL(f));
+  const localFiles=fileFiles.map(f=>({name:f.name,size:f.size,mimetype:f.type,downloadPage:"",localOnly:true}));
+  const conversationId=activeFriend.isGroup?`group:${activeFriend.uid}`:pair(me.uid,activeFriend.uid);
+  const pending={
+    id:pendingId,senderUid:me.uid,text,imageUrls:localImageUrls,imageUrl:localImageUrls[0]||"",files:localFiles,
+    createdAtMs:Date.now(),createdAt:new Date(),localPending:true,pendingStatus:"uploading",
+    conversationId,groupId:activeFriend.isGroup?activeFriend.uid:undefined,
+    groupMemberUids:activeFriend.isGroup?(activeFriend.memberUids||[]):undefined,
+    receiverUid:activeFriend.isGroup?undefined:activeFriend.uid
+  };
+
+  // Optimistic UI: detach the selected files immediately so the composer never waits for upload.
+  attachedImages=[];attachedFiles=[];input.value="";input.style.height="auto";
+  activeMessageMap.set(pendingId,pending);messageMap.set(pendingId,pending);
+  renderUploadQueue();renderMessages();
+  requestAnimationFrame(()=>{const box=$("messages");if(box)box.scrollTop=box.scrollHeight;});
+
   try{
     const imageUrls=[];
-    for(const f of attachedImages){
-      toast("ছবি আপলোড হচ্ছে…");
-      imageUrls.push(await uploadImage(f));
-    }
+    for(const f of imageFiles)imageUrls.push(await uploadImage(f));
     const fileDatas=[];
-    for(const f of attachedFiles){
-      toast("ফাইল আপলোড হচ্ছে…");
-      fileDatas.push(await uploadFile(f));
-    }
+    for(const f of fileFiles)fileDatas.push(await uploadFile(f));
     const firstFile=fileDatas[0]||null;
     const payload={senderUid:me.uid,text,imageUrls,imageUrl:imageUrls[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
     if(activeFriend.isGroup){payload.groupId=activeFriend.uid;payload.groupMemberUids=activeFriend.memberUids||[];payload.groupMemberMap=Object.fromEntries((activeFriend.memberUids||[]).map(x=>[String(x),true]));}else payload.receiverUid=activeFriend.uid;
-    await MESSAGES().add(payload);
-    input.value="";input.style.height="auto";
-    attachedImages=[];attachedFiles=[];
-    renderUploadQueue();toast("Message sent");
+    const docRef=await MESSAGES().add(payload);
+
+    // Replace the local preview with the real Firebase message. The visual message stays in place.
+    activeMessageMap.delete(pendingId);messageMap.delete(pendingId);
+    localImageUrls.forEach(u=>URL.revokeObjectURL(u));
+    toast("Message sent");
+    try{
+      const real=normalizeLocalMessage({id:docRef.id,...payload,createdAtMs:Date.now()});
+      activeMessageMap.set(real.id,real);messageMap.set(real.id,real);
+      await idbPutMessages([real]);
+    }catch(_){ }
+    renderMessages();
   }catch(err){
     console.error(err);
-    toast(err.message==="Failed to fetch"?"Upload service blocked or offline":(err.message||"Message পাঠানো যায়নি"));
-  }finally{btn.disabled=false;input.focus()}
+    pending.pendingStatus="failed";pending.localPending=true;
+    activeMessageMap.set(pendingId,pending);messageMap.set(pendingId,pending);
+    renderMessages();
+    toast(err.message==="Failed to fetch"?"Upload service blocked or offline":(err.message||"File/message পাঠানো যায়নি"));
+  }finally{
+    btn.disabled=false;
+    if(keepComposerFocus && input && !input.disabled){
+      requestAnimationFrame(()=>{try{input.focus({preventScroll:true});if(selectionStart!==null&&document.activeElement===input){const pos=Math.min(input.value.length,selectionStart);input.setSelectionRange(pos,pos)}}catch(_){try{input.focus()}catch(__){}}});
+    }
+  }
 }
 function handleTyping(){if(!activeFriend||activeFriend.isGroup)return;clearTimeout(typingTimer);USERS().doc(me.uid).set({typingTo:activeFriend.uid,typingAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{});typingTimer=setTimeout(()=>USERS().doc(me.uid).set({typingTo:null},{merge:true}).catch(()=>{}),1200)}
 async function saveProfile(){const name=$("editName").value.trim();if(!name)return;try{const photo=$("editPhoto").value.trim()||null,bio=$("editBio").value.trim();await USERS().doc(me.uid).set({displayName:name,photoURL:photo,bio,profileUpdatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});profile={...profile,displayName:name,photoURL:photo,bio};syncProfile();closeAllModals();toast("Profile updated")}catch(e){toast("Profile save হয়নি")}}
@@ -1399,12 +1454,20 @@ async function saveProfile(){const name=$("editName").value.trim();if(!name)retu
 
 // ===== v4 Offline-first data layer =====
 const FM_DB_NAME="fast-messenger-local";
-const FM_DB_VERSION=1;
-const FM_STORES={messages:"messages",meta:"meta"};
+const FM_DB_VERSION=2;
+const FM_STORES={messages:"messages",meta:"meta",images:"images"};
+const FM_PAGE_SIZE=25;
+const FM_WARM_PAGES=2;
+const FM_WARM_MESSAGE_LIMIT=FM_PAGE_SIZE*FM_WARM_PAGES;
+let fmWarmupPromise=null;
+const fmImageObjectUrls=new Map();
 let fmDB=null;
 let currentConversationId=null;
 let messagePageSize=25;
 let oldestLoadedCreatedAt=0;
+let historyPage=1;
+let historyPrefetchBusy=false;
+let historyNoMore=false;
 let syncInProgress=false;
 
 function idbOpen(){
@@ -1413,11 +1476,17 @@ function idbOpen(){
     const req=indexedDB.open(FM_DB_NAME,FM_DB_VERSION);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      const ms=db.createObjectStore(FM_STORES.messages,{keyPath:"id"});
-      ms.createIndex("conversationCreatedAt",["conversationId","createdAtMs"],{unique:false});
-      db.createObjectStore(FM_STORES.meta,{keyPath:"key"});
+      let ms=db.objectStoreNames.contains(FM_STORES.messages)?e.target.transaction.objectStore(FM_STORES.messages):db.createObjectStore(FM_STORES.messages,{keyPath:"id"});
+      if(!ms.indexNames.contains("conversationCreatedAt"))ms.createIndex("conversationCreatedAt",["conversationId","createdAtMs"],{unique:false});
+      if(!db.objectStoreNames.contains(FM_STORES.meta))db.createObjectStore(FM_STORES.meta,{keyPath:"key"});
+      if(!db.objectStoreNames.contains(FM_STORES.images)){
+        db.createObjectStore(FM_STORES.images,{keyPath:"url"});
+      }
     };
-    req.onsuccess=()=>{fmDB=req.result;resolve(fmDB)};
+    req.onsuccess=()=>{
+      fmDB=req.result;
+      migrateLocalMessagesV2(fmDB).then(()=>resolve(fmDB)).catch(()=>resolve(fmDB));
+    };
     req.onerror=()=>reject(req.error);
   });
 }
@@ -1462,10 +1531,94 @@ async function idbPutMessages(items){
 async function idbSetMeta(key,value){return idbPut(FM_STORES.meta,{key,value})}
 async function idbGetMeta(key){const x=await idbGet(FM_STORES.meta,key);return x?.value}
 function normalizeLocalMessage(m){
+  const conversationId=m.conversationId || (m.groupId?`group:${m.groupId}`:pair(m.senderUid,m.receiverUid));
   return {...m,
     createdAtMs:m.createdAtMs || (m.createdAt?.toMillis?m.createdAt.toMillis():Date.now()),
-    conversationId:m.conversationId || pair(m.senderUid,m.receiverUid)
+    conversationId
   };
+}
+async function migrateLocalMessagesV2(db){
+  const done=await new Promise(resolve=>{
+    const tx=db.transaction(FM_STORES.meta,"readonly"),r=tx.objectStore(FM_STORES.meta).get("messages_v2_migrated");
+    r.onsuccess=()=>resolve(!!r.result?.value);r.onerror=()=>resolve(false);
+  });
+  if(done)return;
+  const rows=await new Promise((resolve,reject)=>{
+    const tx=db.transaction(FM_STORES.messages,"readonly"),r=tx.objectStore(FM_STORES.messages).getAll();
+    r.onsuccess=()=>resolve(r.result||[]);r.onerror=()=>reject(r.error);
+  });
+  if(rows.length){
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction(FM_STORES.messages,"readwrite"),st=tx.objectStore(FM_STORES.messages);
+      rows.forEach(m=>st.put(normalizeLocalMessage(m)));
+      tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+    });
+  }
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction(FM_STORES.meta,"readwrite");tx.objectStore(FM_STORES.meta).put({key:"messages_v2_migrated",value:true});
+    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });
+}
+function imageCacheKey(url){return String(url||"").trim()}
+async function idbPutImage(url,blob){
+  if(!url||!blob)return;
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(FM_STORES.images,"readwrite");
+    tx.objectStore(FM_STORES.images).put({url:imageCacheKey(url),blob,type:blob.type||"image/*",savedAt:Date.now()});
+    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });
+}
+async function idbGetImage(url){
+  if(!url)return null;
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(FM_STORES.images,"readonly"),r=tx.objectStore(FM_STORES.images).get(imageCacheKey(url));
+    r.onsuccess=()=>resolve(r.result||null);r.onerror=()=>reject(r.error);
+  });
+}
+async function getCachedImageSrc(url){
+  if(!url)return "";
+  const key=imageCacheKey(url);
+  if(fmImageObjectUrls.has(key))return fmImageObjectUrls.get(key);
+  try{
+    const cached=await idbGetImage(key);
+    if(!cached?.blob)return url;
+    const objectUrl=URL.createObjectURL(cached.blob);
+    fmImageObjectUrls.set(key,objectUrl);
+    return objectUrl;
+  }catch(_){return url}
+}
+async function preloadImage(url){
+  const key=imageCacheKey(url);if(!key)return;
+  try{
+    if(fmImageObjectUrls.has(key))return;
+    const existing=await idbGetImage(key);
+    if(existing?.blob){await getCachedImageSrc(key);return;}
+    const response=await fetch(key,{mode:"cors",credentials:"omit",cache:"force-cache"});
+    if(!response.ok)throw new Error(`image http ${response.status}`);
+    const blob=await response.blob();
+    await idbPutImage(key,blob);
+    await getCachedImageSrc(key);
+  }catch(_){
+    // Some image hosts do not expose CORS. Fall back to the browser's normal image cache.
+    try{const img=new Image();img.decoding="async";img.src=key;await img.decode?.();}catch(__){}
+  }
+}
+async function preloadMessageImages(items){
+  const urls=[...new Set((items||[]).flatMap(m=>Array.isArray(m?.imageUrls)?m.imageUrls:[]).filter(Boolean))];
+  if(!urls.length)return;
+  await Promise.allSettled(urls.slice(0,120).map(preloadImage));
+}
+async function hydrateRenderedMessageImages(items){
+  if(!items?.length)return;
+  const urls=[...new Set(items.flatMap(m=>Array.isArray(m?.imageUrls)?m.imageUrls:[]).filter(Boolean))];
+  if(!urls.length)return;
+  await Promise.allSettled(urls.map(async url=>{
+    const src=await getCachedImageSrc(url);
+    if(src===url)return;
+    document.querySelectorAll(`.msg-img[data-image-url="${CSS.escape(url)}"]`).forEach(img=>{if(img.src!==src)img.src=src;});
+  }));
 }
 async function cacheSnapshotMessages(snapshot){
   const items=snapshot.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()}));
@@ -1477,26 +1630,167 @@ async function renderLocalMessages(conversationId,limit=25,beforeMs=Infinity){
   if(conversationId!==currentConversationId)return local;
   oldestLoadedCreatedAt=local.length?local[0].createdAtMs:0;
   renderMessagesFromPlain(local);
+  hydrateRenderedMessageImages(local).catch(()=>{});
   return local;
 }
-function renderMessagesFromPlain(items){
+function renderMessagesFromPlain(items,options={}){
   const box=$("messages");if(!box)return;
+  const shouldStickBottom=options.scrollToBottom!==false;
   if(!items.length){
     box.innerHTML='<div class="empty-state"><i class="fa-regular fa-comments"></i><b>No messages yet</b><span>Start the conversation.</span></div>';
     return;
   }
   box.innerHTML=items.map(m=>messageHTML(m)).join("");
-  box.scrollTop=box.scrollHeight;
+  if(shouldStickBottom)box.scrollTop=box.scrollHeight;
 }
 async function loadOlderLocalMessages(){
-  if(!currentConversationId||!oldestLoadedCreatedAt)return;
-  const older=await idbMessages(currentConversationId,messagePageSize,oldestLoadedCreatedAt-1);
-  if(!older.length){toast("No more local messages");return}
-  const box=$("messages"),oldHeight=box.scrollHeight,oldTop=box.scrollTop;
-  box.insertAdjacentHTML("afterbegin",older.map(m=>messageHTML(m)).join(""));
-  oldestLoadedCreatedAt=older[0].createdAtMs;
-  box.scrollTop=box.scrollHeight-oldHeight+oldTop;
+  if(!currentConversationId||!oldestLoadedCreatedAt||syncInProgress)return;
+  const box=$("messages");if(!box)return;
+  const oldHeight=box.scrollHeight,oldTop=box.scrollTop;
+  syncInProgress=true;
+  try{
+    let older=await idbMessages(currentConversationId,messagePageSize,oldestLoadedCreatedAt-1);
+    if(!older.length){
+      older=await fetchOlderConversationMessages(currentConversationId,oldestLoadedCreatedAt,3);
+      if(older.length)await idbPutMessages(older);
+    }
+    if(!older.length){historyNoMore=true;return}
+    older=older.map(m=>({...m,fmPrefetched:!!m.fmPrefetched}));
+    const existing=new Set([...activeMessageMap.keys()]);
+    older.forEach(m=>{activeMessageMap.set(m.id,m);messageMap.set(m.id,m)});
+    const html=older.filter(m=>!existing.has(m.id)).map(m=>messageHTML(m)).join("");
+    if(html){
+      box.insertAdjacentHTML("afterbegin",html);
+      oldestLoadedCreatedAt=older[0].createdAtMs;
+      historyPage++;
+      // Preserve the exact visual anchor: adding content above must not move the user's viewport.
+      const delta=box.scrollHeight-oldHeight;
+      box.scrollTop=oldTop+delta;
+    }
+    hydrateRenderedMessageImages(older).catch(()=>{});
+    // When the user has reached the second page, quietly fetch the next three pages.
+    if(historyPage>=2)prefetchNextHistoryPages().catch(e=>console.warn("history prefetch",e));
+  }finally{syncInProgress=false}
 }
+
+async function fetchOlderConversationMessages(conversationId,beforeMs,pages=3){
+  if(!me||!navigator.onLine)return [];
+  const before=firebase.firestore.Timestamp.fromMillis(Number(beforeMs));
+  const limit=Math.max(1,pages)*FM_PAGE_SIZE;
+  const dedupe=new Map();
+  const collect=async(q)=>{
+    try{
+      const snap=await q.orderBy("createdAt","desc").where("createdAt","<",before).limit(limit).get();
+      snap.docs.forEach(d=>dedupe.set(d.id,normalizeLocalMessage({id:d.id,...d.data(),fmPrefetched:true})));
+    }catch(orderErr){
+      // Fallback keeps compatibility with existing Firestore indexes.
+      try{
+        const snap=await q.where("createdAt","<",before).get();
+        snap.docs.forEach(d=>dedupe.set(d.id,normalizeLocalMessage({id:d.id,...d.data(),fmPrefetched:true})));
+      }catch(fallbackErr){console.warn("older message query failed",fallbackErr)}
+    }
+  };
+  if(conversationId.startsWith("group:")){
+    await collect(MESSAGES().where("groupId","==",conversationId.slice(6)));
+  }else{
+    const [a,b]=conversationId.split("__");
+    await Promise.all([
+      collect(MESSAGES().where("senderUid","==",a).where("receiverUid","==",b)),
+      collect(MESSAGES().where("senderUid","==",b).where("receiverUid","==",a))
+    ]);
+  }
+  const items=[...dedupe.values()].sort((a,b)=>a.createdAtMs-b.createdAtMs).slice(-limit);
+  if(items.length){await idbPutMessages(items);await preloadMessageImages(items)}
+  return items;
+}
+
+async function prefetchNextHistoryPages(){
+  if(historyPrefetchBusy||historyNoMore||!currentConversationId||!oldestLoadedCreatedAt||!navigator.onLine)return;
+  historyPrefetchBusy=true;
+  try{
+    const items=await fetchOlderConversationMessages(currentConversationId,oldestLoadedCreatedAt,3);
+    if(items.length){
+      // Store as hidden historical cache; images are downloaded in the background but remain blurred in UI.
+      items.forEach(m=>messageMap.set(m.id,m));
+      const first=items[0]?.createdAtMs;
+      if(first)await idbSetMeta("prefetchBefore_"+currentConversationId,first);
+      if(items.length<FM_PAGE_SIZE*3)historyNoMore=true;
+    }else historyNoMore=true;
+  }finally{historyPrefetchBusy=false}
+}
+
+let fmImageZoom=1;
+function ensureImageViewer(){
+  if($("fmImageViewer"))return;
+  const el=document.createElement("div");el.id="fmImageViewer";el.className="fm-image-viewer hidden";el.innerHTML=`<div class="fm-image-viewer-backdrop" onclick="closeImageViewer()"></div><div class="fm-image-viewer-card"><div class="fm-image-viewer-toolbar"><button type="button" onclick="zoomImage(-0.2)" title="Zoom out"><i class="fa-solid fa-minus"></i></button><button type="button" onclick="zoomImage(0.2)" title="Zoom in"><i class="fa-solid fa-plus"></i></button><button type="button" onclick="downloadViewerImage()" title="Download"><i class="fa-solid fa-download"></i></button><button type="button" onclick="closeImageViewer()" title="Close"><i class="fa-solid fa-xmark"></i></button></div><div class="fm-image-stage"><img id="fmViewerImage" alt="Image preview"></div></div>`;document.body.appendChild(el);
+}
+function showImage(url){if(!url)return;ensureImageViewer();fmImageZoom=1;const img=$("fmViewerImage");img.src=fmImageObjectUrls.get(url)||url;img.dataset.sourceUrl=url;img.style.transform=`scale(${fmImageZoom})`;$("fmImageViewer").classList.remove("hidden");}
+function zoomImage(delta){const img=$("fmViewerImage");if(!img)return;fmImageZoom=Math.min(4,Math.max(.5,fmImageZoom+delta));img.style.transform=`scale(${fmImageZoom})`;}
+function downloadViewerImage(){const url=$("fmViewerImage")?.dataset.sourceUrl;if(url)downloadOriginalImage(url)}
+function closeImageViewer(){$("fmImageViewer")?.classList.add("hidden")}
+
+async function downloadOriginalImage(url){
+  if(!url)return;
+  try{
+    const cached=await idbGetImage(url);
+    const blob=cached?.blob||(await fetch(url,{mode:"cors",credentials:"omit"})).blob();
+    const b=await blob;
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(b);a.download=(url.split("/").pop()||"image").split("?")[0]||"image";
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){window.open(url,"_blank","noopener,noreferrer")}
+}
+
+async function warmFriendChatCaches(){
+  if(!me||!navigator.onLine||fmWarmupPromise)return fmWarmupPromise;
+  fmWarmupPromise=(async()=>{
+    try{
+      await idbOpen();
+      const friendIds=[...new Set(friends.map(f=>String(f?.friendUid||f?.uid||"")).filter(Boolean))];
+      const groupIds=[...new Set(groups.map(g=>String(g?.id||g?.uid||"")).filter(Boolean))];
+      const targets=[];
+      friendIds.forEach(uid=>targets.push({kind:"friend",uid}));
+      groupIds.forEach(uid=>targets.push({kind:"group",uid}));
+      const concurrency=3;let cursor=0;
+      const worker=async()=>{
+        while(cursor<targets.length){
+          const target=targets[cursor++];
+          try{
+            let docs=[];
+            if(target.kind==="group"){
+              const s=await MESSAGES().where("groupId","==",target.uid).get();
+              docs=s.docs;
+            }else{
+              const [outgoing,incoming]=await Promise.all([
+                MESSAGES().where("senderUid","==",me.uid).where("receiverUid","==",target.uid).get(),
+                MESSAGES().where("senderUid","==",target.uid).where("receiverUid","==",me.uid).get()
+              ]);
+              const map=new Map();[...outgoing.docs,...incoming.docs].forEach(d=>map.set(d.id,d));docs=[...map.values()];
+            }
+            const items=docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()})).sort((a,b)=>b.createdAtMs-a.createdAtMs).slice(0,FM_WARM_MESSAGE_LIMIT);
+            if(items.length){
+              await idbPutMessages(items);
+              await preloadMessageImages(items);
+              items.forEach(m=>messageMap.set(m.id,m));
+            }
+          }catch(e){console.warn("warm chat cache",target.uid,e)}
+        }
+      };
+      await Promise.all(Array.from({length:Math.min(concurrency,Math.max(1,targets.length))},worker));
+      cacheMessages();
+      if(activeFriend)await renderLocalMessages(activeFriend.isGroup?`group:${activeFriend.uid}`:pair(me.uid,activeFriend.uid),FM_WARM_MESSAGE_LIMIT);
+    }finally{fmWarmupPromise=null}
+  })();
+  return fmWarmupPromise;
+}
+function scheduleWarmFriendChatCaches(){
+  if(!me||!navigator.onLine)return;
+  const run=()=>warmFriendChatCaches().catch(e=>console.warn("warm chat cache",e));
+  if(typeof requestIdleCallback==="function")requestIdleCallback(run,{timeout:1800});
+  else setTimeout(run,250);
+}
+
 async function deltaSync(){
   if(!me||!navigator.onLine||syncInProgress)return;
   syncInProgress=true;setSyncUI(true,"Syncing changes…");
@@ -1803,7 +2097,7 @@ auth.onAuthStateChanged(async user=>{
     syncProfile();syncMenu();hydrateLocalCache();
     renderChats();
     if(typeof requestAnimationFrame==="function")requestAnimationFrame(()=>{hydrateLocalCache();syncProfile();renderChats()});
-    heartbeat();startListeners();watchIncomingNotifications();watchCallInvites();
+    heartbeat();startListeners();watchIncomingNotifications();watchCallInvites();scheduleWarmFriendChatCaches();
     ensureUser().then(()=>saveLocal("profile",profile)).catch(e=>console.warn("profile sync delayed",e));
   }else{
     if(window.__resetGoogleLoginLoading)window.__resetGoogleLoginLoading();
@@ -1819,7 +2113,20 @@ document.querySelectorAll("[data-people-tab]").forEach(b=>b.onclick=()=>{peopleT
 $("peopleSearch").oninput=renderPeople;$("chatSearch").oninput=renderChats;$("groupSearch").oninput=renderGroups;$("createGroupBtn").onclick=showGroupModal;$("saveGroupBtn").onclick=createGroup;
 if($("refreshBtn"))$("refreshBtn").onclick=()=>{renderChats();renderPeople();renderGroups();toast("Refreshed")};
 $("backChat").onclick=closeChat;$("composer").onsubmit=sendMessage;
-$("messageInput").addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,120)+"px";handleTyping()});
+const composerInput=$("messageInput"),sendButton=$("composer .send-btn");
+// A native button normally takes focus on touch. On mobile that can dismiss the
+// virtual keyboard. Submit from pointerdown while keeping focus on the textarea.
+if(sendButton&&composerInput){
+  sendButton.addEventListener("pointerdown",e=>{
+    if(e.pointerType==="touch"||e.pointerType==="pen"){
+      if(sendButton.disabled)return;
+      e.preventDefault();
+      composerInput.focus({preventScroll:true});
+      $("composer")?.requestSubmit?.(sendButton);
+    }
+  },{passive:false});
+}
+composerInput?.addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,120)+"px";handleTyping()});
 $("pickImage").onclick=()=>$("imageInput").click();
 $("pickFile").onclick=()=>$("fileInput").click();
 $("imageInput").onchange=e=>{
@@ -1933,13 +2240,25 @@ document.addEventListener("DOMContentLoaded",async()=>{
   updateConnectivity();
   const box=$("messages");
   if(box)box.addEventListener("scroll",()=>{
-    if(box.scrollTop<90 && activeFriend&&!syncInProgress){
-      const conversationId=activeFriend.isGroup?activeFriend.uid:pair(me.uid,activeFriend.uid);
+    if(box.scrollTop<140 && activeFriend&&!syncInProgress){
+      const conversationId=activeFriend.isGroup?`group:${activeFriend.uid}`:pair(me.uid,activeFriend.uid);
       if(conversationId&&oldestLoadedCreatedAt)loadOlderLocalMessages();
     }
-  });
+    // Do not block scrolling on network work; prefetch runs only after page 2 is reached.
+    if(historyPage>=2 && box.scrollTop<Math.max(320,box.clientHeight*.75))prefetchNextHistoryPages().catch(()=>{});
+  },{passive:true});
 });
 
+
+/* Smooth historical message loading: preserve scroll anchoring and avoid image layout shifts. */
+(function installHistoryUX(){
+  const style=document.createElement("style");style.id="fm-history-ux";style.textContent=`
+    #messages{overflow-anchor:auto;overscroll-behavior-y:contain;}
+    #messages .msg-img{contain:layout paint;min-height:24px;}
+    #messages .fm-prefetched-image{filter:blur(16px);transform:translateZ(0);cursor:pointer;transition:filter .18s ease;}
+    #messages .fm-prefetched-image:hover{filter:blur(12px);}
+  `;document.head.appendChild(style);
+})();
 
 /* Camera preview controls */
 document.addEventListener("click",async e=>{
