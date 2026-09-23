@@ -1880,14 +1880,16 @@ function ensureImageViewer(){
       maxScale:5,
       minScale:1,
       step:.25,
-      contain:'outside',
+      contain:'inside',
       cursor:'grab',
       startScale:1,
       disablePan:false,
       panOnlyWhenZoomed:true,
       animate:true,
-      duration:180,
+      duration:260,
       easing:'ease-out',
+      canvas:true,
+      step:.18,
       handleStartEvent:'pointerdown',
       excludeClass:'panzoom-exclude'
     });
@@ -1896,14 +1898,33 @@ function ensureImageViewer(){
     wrap.addEventListener('panzoomstart',()=>wrap.classList.add('is-dragging'));
     wrap.addEventListener('panzoomend',()=>wrap.classList.remove('is-dragging'));
     stage.addEventListener('wheel',e=>{
-      if($('fmImageViewer')?.classList.contains('hidden'))return;
+      if($('fmImageViewer')?.classList.contains('hidden') || !fmViewerPanzoom)return;
       e.preventDefault();e.stopPropagation();
-      fmViewerPanzoom?.zoomWithWheel?.(e);
+      // Use the viewer centre as the wheel-zoom focal point. This avoids the
+      // common 'zoom jumps to the left/right' feeling caused by cursor-based zoom.
+      try{
+        const current=fmViewerPanzoom.getScale?.()||1;
+        const factor=Math.exp(-e.deltaY*0.0012);
+        const next=Math.max(1,Math.min(5,current*factor));
+        const rect=stage.getBoundingClientRect();
+        fmViewerPanzoom.zoom(next,{animate:true,duration:220,focal:{x:rect.width/2,y:rect.height/2}});
+      }catch(_){
+        fmViewerPanzoom.zoomWithWheel?.(e);
+      }
     },{passive:false});
     stage.addEventListener('dblclick',e=>{
       e.preventDefault();e.stopPropagation();
       if(!fmViewerPanzoom)return;
-      try{fmViewerPanzoom.reset({animate:true})}catch(_){try{fmViewerPanzoom.reset()}catch(__){}}
+      try{fmViewerPanzoom.reset({animate:true,duration:280})}catch(_){try{fmViewerPanzoom.reset()}catch(__){}}
+    });
+    // Keep the zoom origin in the visual center. This prevents the image from
+    // drifting to the left when pinch/wheel zoom starts from an off-center point.
+    stage.addEventListener('pointerdown',()=>{
+      wrap.style.transformOrigin='50% 50%';
+    },{passive:true});
+    window.addEventListener('resize',()=>{
+      if($('fmImageViewer')?.classList.contains('hidden'))return;
+      try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){}
     });
   };
   img.addEventListener('load',()=>{
@@ -1923,6 +1944,9 @@ function showImage(url){
   // The viewer always uses its own image element. Never modify, move, resize,
   // or reuse the original image element inside the chat message.
   const source=fmImageObjectUrls.get(url)||url;
+  // Reset before/after changing the source so Panzoom never carries a previous
+  // image's translation into the next image. The actual reset after load is
+  // essential because image dimensions can differ dramatically.
   try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
   img.removeAttribute('style');
   img.src=source;
@@ -1930,9 +1954,14 @@ function showImage(url){
   viewer.classList.remove('hidden');
   document.body.classList.add('fm-viewer-open');
   viewer.focus({preventScroll:true});
-  requestAnimationFrame(()=>{
-    try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
+  const centerAfterLoad=()=>requestAnimationFrame(()=>{
+    try{
+      fmViewerPanzoom?.reset?.({animate:false});
+      wrap.style.transformOrigin='50% 50%';
+    }catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
   });
+  if(img.complete) centerAfterLoad();
+  else img.addEventListener('load',centerAfterLoad,{once:true});
 }
 
 // Compatibility API used by profile pictures.
