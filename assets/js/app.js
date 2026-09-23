@@ -1244,6 +1244,93 @@ function setChatHeader(u){
 window.openUser=uid=>{const u=users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid);if(!u)return;$("userModalAvatar").src=avatar(u);$("userModalName").textContent=u.displayName||"User";$("userModalEmail").textContent=u.email||"";$("userModalBio").textContent=u.bio||"No bio added.";$("userModalChat").onclick=()=>{closeAllModals();openChat(uid)};$("userModal").classList.remove("hidden")};
 
 function subscribeChat(uid){chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];const ref=MESSAGES();if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(renderMessages));}else{chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(renderMessages));chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(renderMessages));}}
+let replyTarget=null;
+function replyPreviewText(m){
+  if(m?.text) return String(m.text).replace(/\s+/g," ").trim().slice(0,140);
+  if(Array.isArray(m?.imageUrls)&&m.imageUrls.length) return m.imageUrls.length>1?`📷 ${m.imageUrls.length}টি ছবি`:"📷 ছবি";
+  if(Array.isArray(m?.files)&&m.files.length) return m.files.length>1?`📎 ${m.files.length}টি ফাইল`:`📎 ${m.files[0]?.name||"ফাইল"}`;
+  if(m?.fileName) return `📎 ${m.fileName}`;
+  return "Message";
+}
+function startReply(messageId){
+  const m=activeMessageMap.get(messageId)||messageMap.get(messageId);
+  if(!m||m.type==="call")return;
+  const sender=users.find(u=>String(u.uid)===String(m.senderUid));
+  replyTarget={id:messageId,name:String(m.senderUid)===String(me?.uid)?"You":(sender?.displayName||"Member"),text:replyPreviewText(m)};
+  renderReplyPreview();
+  requestAnimationFrame(()=>{const input=$("messageInput");input?.focus();input?.scrollIntoView?.({block:"nearest"})});
+}
+function renderReplyPreview(){
+  const box=$("replyPreview");if(!box)return;
+  if(!replyTarget){box.classList.add("hidden");box.innerHTML="";return;}
+  box.innerHTML=`<div class="reply-preview-copy"><span class="reply-preview-label">Replying to</span><b id="replyToName">${esc(replyTarget.name)}</b><span id="replyTextPreview">${esc(replyTarget.text)}</span></div><button type="button" id="cancelReply" class="reply-cancel" aria-label="Cancel reply" title="Cancel reply"><i class="fa-solid fa-xmark"></i></button>`;
+  box.classList.remove("hidden");
+  box.querySelector("#cancelReply")?.addEventListener("click",cancelReply);
+}
+function cancelReply(){replyTarget=null;renderReplyPreview();}
+function replyQuoteHTML(m){
+  if(!m?.replyToId)return "";
+  return `<div class="reply-quote" data-reply-target="${esc(m.replyToId)}" onclick="scrollToMessage('${esc(m.replyToId)}')"><b>${esc(m.replyToName||"Member")}</b><span>${esc(m.replyTextPreview||"Message")}</span></div>`;
+}
+function scrollToMessage(id){
+  const row=document.querySelector(`.msg-row[data-message-id="${CSS.escape(String(id))}"]`);
+  if(!row)return;
+  row.scrollIntoView({behavior:"smooth",block:"center"});
+  row.classList.add("reply-highlight");
+  setTimeout(()=>row.classList.remove("reply-highlight"),1200);
+}
+const REACTION_EMOJIS=["❤️","👍","😂","😮","😢","😡"];
+let reactionPressTimer=null,reactionPressTarget=null,reactionPressStart=null;
+function normalizeReactions(reactions){
+  if(!reactions||typeof reactions!=="object")return {};
+  return {...reactions};
+}
+function reactionSummary(reactions){
+  const r=normalizeReactions(reactions),out=[];
+  Object.entries(r).forEach(([uid,emoji])=>{if(emoji)out.push({uid:String(uid),emoji:String(emoji)})});
+  return out;
+}
+function reactionOverlayHTML(m){
+  const list=reactionSummary(m.reactions);
+  if(!list.length)return "";
+  const counts={};list.forEach(x=>counts[x.emoji]=(counts[x.emoji]||0)+1);
+  const parts=Object.entries(counts).map(([emoji,count])=>`<span class="reaction-chip ${emoji==='❤️'?'heart-reaction':''}">${esc(emoji)}${count>1?`<small>${count}</small>`:""}</span>`).join("");
+  return `<div class="reaction-overlay" aria-label="Message reactions">${parts}</div>`;
+}
+function reactionBarHTML(m){
+  return `<div class="reaction-bar" data-reaction-bar="${esc(m.id||"")}">${REACTION_EMOJIS.map(e=>`<button type="button" class="reaction-emoji ${e==='❤️'?'heart-reaction':''}" data-reaction="${esc(e)}" data-message-id="${esc(m.id||"")}" aria-label="React ${esc(e)}">${e}</button>`).join("")}</div>`;
+}
+async function setMessageReaction(messageId,emoji){
+  if(!me||!messageId||!emoji)return;
+  const m=activeMessageMap.get(messageId)||messageMap.get(messageId); if(!m)return;
+  if(m.senderUid!==me.uid && !m.receiverUid && !m.groupMemberMap?.[me.uid] && !activeFriend?.isGroup)return toast("এই message-এ reaction দেওয়ার অনুমতি নেই");
+  const reactions=normalizeReactions(m.reactions);
+  if(reactions[me.uid]===emoji)delete reactions[me.uid];else reactions[me.uid]=emoji;
+  try{
+    await MESSAGES().doc(messageId).update({reactions});
+    m.reactions=reactions;activeMessageMap.set(messageId,m);messageMap.set(messageId,m);cacheMessages();renderMessages();
+  }catch(e){console.error("setMessageReaction",e);toast(e?.code==="permission-denied"?"Reaction দেওয়ার permission নেই":"Reaction দেওয়া যায়নি")}
+}
+function hideReactionBars(){document.querySelectorAll(".reaction-bar.is-open").forEach(x=>x.classList.remove("is-open"));}
+function openReactionBar(row){
+  if(!row)return;hideReactionBars();const bar=row.querySelector(".reaction-bar");if(bar){bar.classList.add("is-open");requestAnimationFrame(()=>bar.querySelector(".reaction-emoji")?.focus({preventScroll:true}))}
+}
+function initMessageReactions(){
+  const box=$("messages");if(!box||box.dataset.reactionsBound)return;box.dataset.reactionsBound="1";
+  box.addEventListener("pointerdown",e=>{
+    const row=e.target.closest(".msg-row[data-message-id]");if(!row||e.target.closest(".reaction-bar")||e.target.closest("a,button"))return;
+    reactionPressTarget=row;reactionPressStart={x:e.clientX,y:e.clientY};clearTimeout(reactionPressTimer);
+    reactionPressTimer=setTimeout(()=>{if(reactionPressTarget===row)openReactionBar(row)},520);
+  },{passive:true});
+  ["pointerup","pointercancel","pointerleave"].forEach(ev=>box.addEventListener(ev,e=>{clearTimeout(reactionPressTimer);if(ev!=="pointerleave")reactionPressTarget=null},{passive:true}));
+  box.addEventListener("contextmenu",e=>{const row=e.target.closest(".msg-row[data-message-id]");if(!row)return;e.preventDefault();openReactionBar(row)});
+  box.addEventListener("click",e=>{
+    const b=e.target.closest(".reaction-emoji");
+    if(b){e.preventDefault();e.stopPropagation();setMessageReaction(b.dataset.messageId,b.dataset.reaction);return;}
+    if(!e.target.closest(".reaction-bar"))hideReactionBars();
+  });
+}
+
 function messageHTML(m){
   const mine=m.senderUid===me?.uid;
   if(m.type==="call")return `<div class="msg-row ${mine?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
@@ -1253,8 +1340,9 @@ function messageHTML(m){
   const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
   const senderName=users.find(u=>String(u.uid)===String(m.senderUid))?.displayName||"Member";
   const delBtn=`<button class="msg-delete-btn" type="button" title="Delete message" onclick="deleteMessage('${esc(m.id||'')}')"><i class="fa-solid fa-trash-can"></i></button>`;
-  return `<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">
+  return `<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">${reactionBarHTML(m)}
     ${activeFriend?.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(senderName)}</div>`:""}
+    ${replyQuoteHTML(m)}
     ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
     ${imgs.map(u=>{
       const prefetched=!!m.fmPrefetched;
@@ -1263,7 +1351,7 @@ function messageHTML(m){
         : `<img class="msg-img" data-image-url="${esc(u)}" src="${esc(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="showImage('${esc(u)}')">`;
     }).join("")}
     ${uniqueFiles.map(f=>`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
-    <div class="msg-footer"><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div>${delBtn}</div>
+    ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button>${delBtn}</div></div>
   </div></div>`;
 }
 async function deleteMessage(id){
@@ -1294,12 +1382,13 @@ function renderMessages(){
     const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
     const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
     const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
-    return`<div class="msg-row ${mine?"mine":"theirs"}"><div class="bubble">
+    return`<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">${reactionBarHTML(m)}
       ${activeFriend.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(users.find(u=>u.uid===m.senderUid)?.displayName||"Member")}</div>`:""}
+      ${replyQuoteHTML(m)}
       ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
       ${imgs.map(u=>`<div class="media-bubble ${m.localPending?"media-pending":""}"><img class="msg-img" data-image-url="${escUrl(u)}" src="${escUrl(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="showImage('${escUrl(u)}')"><div class="media-overlay-actions"><button type="button" title="Zoom" onclick="event.stopPropagation();showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button><button type="button" title="Download" onclick="event.stopPropagation();downloadOriginalImage('${escUrl(u)}')"><i class="fa-solid fa-download"></i></button></div>${m.localPending?`<span class="media-uploading"><i class="fa-solid fa-spinner fa-spin"></i> Uploading…</span>`:""}</div>`).join("")}
       ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-download file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"File")}</b><small>${esc(f.size?bytes(f.size):"File")} • Uploading…</small></span><i class="fa-solid fa-spinner fa-spin file-download"></i></div>`).join("")}
-      <div class="msg-time">${time(m.createdAt)}</div>
+      ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(m.createdAt)}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button><button class="msg-delete-btn" type="button" title="Delete message" onclick="event.stopPropagation();deleteMessage('${esc(m.id||"")}')"><i class="fa-solid fa-trash-can"></i></button></div></div>
     </div></div>`;
   }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
   if(wasAtBottom)box.scrollTop=box.scrollHeight;
@@ -1374,7 +1463,7 @@ async function openGroupChat(groupId){
   renderLocalMessages(`group:${groupId}`,FM_WARM_MESSAGE_LIMIT).catch(()=>renderMessages());
   setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();await renderMessages()
 }
-function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];renderUploadQueue();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
+function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];replyTarget=null;renderUploadQueue();renderReplyPreview();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
 function watchTyping(){if(typingUnsub)typingUnsub();if(!activeFriend||activeFriend.isGroup){$("typing").classList.add("hidden");return}typingUnsub=USERS().doc(activeFriend.uid).onSnapshot(s=>{$("typing").classList.toggle("hidden",(s.data()||{}).typingTo!==me.uid)})}
 
 async function uploadImage(file,onProgress){if(file.size>32*1024*1024)throw new Error("Image 32MB-এর বেশি হতে পারবে না");const fd=new FormData();fd.append("image",file);const r=await fetch(`https://api.imgbb.com/1/upload?key=${IMAGE_UPLOAD_KEY}`,{method:"POST",body:fd});const j=await r.json();if(!j.success)throw new Error("ছবি আপলোড করা যায়নি");if(onProgress)onProgress(100);return j.data.url}
@@ -1410,6 +1499,7 @@ async function sendMessage(e){
   const selectionStart=input?.selectionStart ?? null;
   const selectionEnd=input?.selectionEnd ?? null;
   const text=input.value.trim();
+  const currentReply=replyTarget?{...replyTarget}:null;
   const imageFiles=[...attachedImages];
   const fileFiles=[...attachedFiles];
   if(!text&&!imageFiles.length&&!fileFiles.length)return;
@@ -1429,11 +1519,13 @@ async function sendMessage(e){
     createdAtMs:Date.now(),createdAt:new Date(),localPending:true,pendingStatus:"uploading",
     conversationId,groupId:activeFriend.isGroup?activeFriend.uid:undefined,
     groupMemberUids:activeFriend.isGroup?(activeFriend.memberUids||[]):undefined,
-    receiverUid:activeFriend.isGroup?undefined:activeFriend.uid
+    receiverUid:activeFriend.isGroup?undefined:activeFriend.uid,
+    replyToId:currentReply?.id||"",replyToName:currentReply?.name||"",replyTextPreview:currentReply?.text||""
   };
 
   // Optimistic UI: detach the selected files immediately so the composer never waits for upload.
   attachedImages=[];attachedFiles=[];input.value="";input.style.height="auto";
+  replyTarget=null;renderReplyPreview();
   activeMessageMap.set(pendingId,pending);messageMap.set(pendingId,pending);
   renderUploadQueue();renderMessages();
   requestAnimationFrame(()=>{const box=$("messages");if(box)box.scrollTop=box.scrollHeight;});
@@ -1444,7 +1536,7 @@ async function sendMessage(e){
     const fileDatas=[];
     for(const f of fileFiles)fileDatas.push(await uploadFile(f));
     const firstFile=fileDatas[0]||null;
-    const payload={senderUid:me.uid,clientMessageId:pendingId,text,imageUrls,imageUrl:imageUrls[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
+    const payload={senderUid:me.uid,clientMessageId:pendingId,text,replyToId:currentReply?.id||"",replyToName:currentReply?.name||"",replyTextPreview:currentReply?.text||"",imageUrls,imageUrl:imageUrls[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
     if(activeFriend.isGroup){payload.groupId=activeFriend.uid;payload.groupMemberUids=activeFriend.memberUids||[];payload.groupMemberMap=Object.fromEntries((activeFriend.memberUids||[]).map(x=>[String(x),true]));}else payload.receiverUid=activeFriend.uid;
     const docRef=await MESSAGES().add(payload);
 
@@ -1764,6 +1856,9 @@ function ensureImageViewer(){
   el.innerHTML=`
     <div class="fm-image-viewer-backdrop"></div>
     <div class="fm-image-viewer-card">
+      <button type="button" id="fmImageViewerClose" class="fm-image-viewer-close" aria-label="Close image viewer" title="Close">
+        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+      </button>
       <div class="fm-image-stage" id="fmImageStage">
         <img id="fmViewerImage" alt="Image preview" draggable="false">
         <div class="fm-image-viewer-hint">Wheel / pinch = zoom • drag = pan • double click = reset</div>
@@ -1773,6 +1868,12 @@ function ensureImageViewer(){
 
   const stage=$('fmImageStage');
   const img=$('fmViewerImage');
+  const closeViewerButton=$('fmImageViewerClose');
+  const closeViewer=()=>closeImageViewer();
+  closeViewerButton?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();closeViewer();});
+  $('fmImageViewer').querySelector('.fm-image-viewer-backdrop')?.addEventListener('click',closeViewer);
+  el.addEventListener('keydown',e=>{if(e.key==='Escape')closeViewer();});
+  el.tabIndex=-1;
 
   stage.addEventListener('wheel',e=>{
     e.preventDefault();
@@ -1872,6 +1973,13 @@ function zoomImage(delta,focusX=null,focusY=null){
   const step=Math.abs(delta)>1?delta:(delta>0?.25:-.25);
   setImageZoom(fmImageZoom+step,focusX,focusY);
 }
+// Profile/photo lightbox entry point. Kept as a small compatibility API so
+// profile images can simply use onclick="viewImg(this.src)".
+function viewImg(url){
+  if(!url)return;
+  showImage(url);
+}
+
 function showImage(url){
   if(!url)return;
   ensureImageViewer();
@@ -1882,6 +1990,7 @@ function showImage(url){
   img.dataset.sourceUrl=url;
   applyImageTransform(false);
   $('fmImageViewer').classList.remove('hidden');
+  $('fmImageViewer').focus();
   document.body.classList.add('fm-viewer-open');
 }
 function downloadViewerImage(){if(fmViewerSourceUrl)downloadOriginalImage(fmViewerSourceUrl)}
@@ -1891,6 +2000,10 @@ function closeImageViewer(){
   fmViewerPointers.clear();fmViewerDrag=null;fmViewerPinch=null;fmImageZoom=1;fmImagePanX=0;fmViewerSourceUrl='';
   document.body.classList.remove('fm-viewer-open');
 }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape' && !$('fmImageViewer')?.classList.contains('hidden')) closeImageViewer();
+});
 
 async function downloadOriginalImage(url){
   if(!url)return;
@@ -2324,6 +2437,20 @@ $("closeLightbox").onclick=()=>{$("lightbox").classList.add("hidden");$("lightbo
 
 // ===== v3 UI wiring =====
 initPreferences();
+initMessageReactions();
+
+// Profile pictures open in the same full-screen lightbox.
+["profileAvatar","userModalAvatar"].forEach(id=>{
+  const el=$(id);
+  if(el){
+    el.style.cursor="zoom-in";
+    el.addEventListener("click",e=>{
+      e.preventDefault();
+      e.stopPropagation();
+      if(el.src) viewImg(el.src);
+    });
+  }
+});
 
 $("menuBtn").onclick=(e)=>{e.stopPropagation();syncMenu();$("moreMenu").classList.toggle("hidden")};
 document.querySelectorAll("[data-menu-action]").forEach(b=>b.onclick=async()=>{
@@ -2399,6 +2526,7 @@ window.addEventListener("offline",updateConnectivity);
 document.addEventListener("DOMContentLoaded",async()=>{
   // Home chat list must paint independently of the search box on first load.
   try{renderChats()}catch(e){console.warn("initial chat render",e)}
+  try{renderReplyPreview()}catch(e){console.warn("initial reply preview",e)}
   try{await idbOpen()}catch(e){console.warn("IndexedDB unavailable",e)}
   updateConnectivity();
   const box=$("messages");
