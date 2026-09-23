@@ -72,7 +72,7 @@ body.dark .chat-panel{background:rgba(0,0,0,.10) !important;}
 
 /* Optimistic media UI + image viewer */
 .media-bubble{position:relative;display:inline-block;max-width:min(78vw,360px);margin-top:5px;border-radius:14px;overflow:hidden;background:rgba(0,0,0,.12)}
-.media-bubble .msg-img{display:block;max-width:min(78vw,360px);max-height:360px;width:auto;height:auto;object-fit:contain;cursor:zoom-in}
+.media-bubble .msg-img{display:block;flex:0 0 auto;max-width:min(78vw,360px);max-height:360px;width:auto!important;height:auto!important;min-width:0;min-height:0;object-fit:contain;cursor:zoom-in}
 .media-overlay-actions{position:absolute;right:7px;bottom:7px;display:flex;gap:6px;opacity:0;transition:opacity .18s ease}
 .media-bubble:hover .media-overlay-actions,.media-bubble:focus-within .media-overlay-actions{opacity:1}
 .media-overlay-actions button{width:34px;height:34px;border:0;border-radius:50%;background:rgba(0,0,0,.68);color:#fff;cursor:pointer;backdrop-filter:blur(5px)}
