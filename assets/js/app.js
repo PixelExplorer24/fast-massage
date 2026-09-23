@@ -1417,7 +1417,9 @@ async function sendMessage(e){
   if(activeFriend.isGroup && !(activeFriend.memberUids||[]).includes(me.uid))return toast("আপনি এই গ্রুপের সদস্য নন");
 
   const btn=document.querySelector(".send-btn");
-  btn.disabled=true;
+  // Do not disable the send button while media uploads in the background.
+  // Each send owns its own optimistic message and upload promise, so users can
+  // immediately send another message/media item without waiting.
   const pendingId=`pending_${me.uid}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
   const localImageUrls=imageFiles.map(f=>URL.createObjectURL(f));
   const localFiles=fileFiles.map(f=>({name:f.name,size:f.size,mimetype:f.type,downloadPage:"",localOnly:true}));
@@ -1465,7 +1467,6 @@ async function sendMessage(e){
     renderMessages();
     toast(err.message==="Failed to fetch"?"Upload service blocked or offline":(err.message||"File/message পাঠানো যায়নি"));
   }finally{
-    btn.disabled=false;
     if(keepComposerFocus && input && !input.disabled){
       requestAnimationFrame(()=>{try{input.focus({preventScroll:true});if(selectionStart!==null&&document.activeElement===input){const pos=Math.min(input.value.length,selectionStart);input.setSelectionRange(pos,pos)}}catch(_){try{input.focus()}catch(__){}}});
     }
@@ -1847,29 +1848,30 @@ function clampImagePan(){
   fmImagePanY=Math.max(-maxY,Math.min(maxY,fmImagePanY));
 }
 function applyImageTransform(animate=true){
-  const img=$('fmViewerImage');if(!img)return;
+  const img=$("fmViewerImage");if(!img)return;
   clampImagePan();
-  img.style.transition=animate?'transform .12s ease-out':'none';
+  img.style.transition=animate?"transform .12s ease-out":"none";
   img.style.transform=`translate3d(calc(-50% + ${fmImagePanX}px),calc(-50% + ${fmImagePanY}px),0) scale(${fmImageZoom})`;
 }
 function setImageZoom(value,focusX=null,focusY=null){
   const old=fmImageZoom;
-  fmImageZoom=Math.max(1,Math.min(5,value));
+  const next=Math.max(1,Math.min(5,Number(value)||1));
+  if(next===old){applyImageTransform(false);return}
+  fmImageZoom=next;
   if(fmImageZoom<=1){fmImagePanX=0;fmImagePanY=0}
-  else if(focusX!==null && focusY!==null){
-    const stage=$('fmImageStage');
-    const rect=stage?.getBoundingClientRect();
+  else if(focusX!==null&&focusY!==null){
+    const stage=$("fmImageStage"),rect=stage?.getBoundingClientRect();
     if(rect){
-      const cx=focusX-(rect.left+rect.width/2),cy=focusY-(rect.top+rect.height/2);
-      const ratio=(fmImageZoom/Math.max(.001,old))-1;
-      fmImagePanX-=cx*ratio;
-      fmImagePanY-=cy*ratio;
+      const cx=focusX-(rect.left+rect.width/2),cy=focusY-(rect.top+rect.height/2),ratio=(fmImageZoom/Math.max(.001,old))-1;
+      fmImagePanX-=cx*ratio;fmImagePanY-=cy*ratio;
     }
   }
   applyImageTransform(true);
 }
-function zoomImage(delta,focusX=null,focusY=null){setImageZoom(fmImageZoom+delta,focusX,focusY)}
-
+function zoomImage(delta,focusX=null,focusY=null){
+  const step=Math.abs(delta)>1?delta:(delta>0?.25:-.25);
+  setImageZoom(fmImageZoom+step,focusX,focusY);
+}
 function showImage(url){
   if(!url)return;
   ensureImageViewer();
