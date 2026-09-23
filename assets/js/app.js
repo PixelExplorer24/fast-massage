@@ -1001,9 +1001,15 @@ async function markConversationRead(uid){
   }));
 }
 
-function renderChats(){
+function renderChats(chats){
   ensureUnreadChatStyles();
+
   if(!me)return;
+
+  // `chats` is optional: callers that already have a freshly-built room list
+  // can pass it directly, while normal lifecycle calls use the current state.
+  // This keeps rendering independent from the search input event.
+  const renderSource=Array.isArray(chats)?normalizeChatRooms(chats):buildChatRoomCache();
 
   // Empty/whitespace search means "show all chats". Never let an empty
   // search value filter the list or prevent the initial render.
@@ -1021,8 +1027,9 @@ function renderChats(){
   // listener then replaces it with the current Firebase state.
   const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
   const cachedFriends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
+  const sourceFriends=renderSource.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
   const registryFriends=Array.isArray(readJsonKey(persistentFriendsKey(),[]))?readJsonKey(persistentFriendsKey(),[]):[];
-  const roomFriends=friends.length?friends:(cachedFriends.length?cachedFriends:registryFriends);
+  const roomFriends=friends.length?friends:(sourceFriends.length?sourceFriends:(cachedFriends.length?cachedFriends:registryFriends));
   roomFriends.forEach(f=>{if(f.friendUid&&!by.has(f.friendUid))by.set(f.friendUid,null)});
   const cachedFriendProfiles=new Map(
     cachedRooms
@@ -1044,7 +1051,9 @@ function renderChats(){
     );
   }
   const box=$("chatList");
-  const groupRows=groups.filter(g=>!q||(g.name||"").toLowerCase().includes(q)).map(g=>{
+  const sourceGroups=renderSource.filter(x=>x.kind==="group").map(x=>x.group).filter(Boolean);
+  const groupSource=sourceGroups.length?sourceGroups:groups;
+  const groupRows=groupSource.filter(g=>!q||(g.name||"").toLowerCase().includes(q)).map(g=>{
     const m=[...messageMap.values()].filter(x=>x.groupId===g.id).sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0))[0];
     const preview=m?.type==="call"?((m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(m)):m?.text||((m?.imageUrls||[]).length?"📷 ছবি":m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
     return `<button class="chat-item" onclick="openGroupChat('${esc(g.id)}')"><span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${esc(preview)}</small></span><time class="item-meta">${m?time(m.createdAt):"Group"}</time></button>`;
@@ -1063,7 +1072,56 @@ function renderChats(){
 function renderGroups(){const box=$("groupList");if(!box)return;const q=($("groupSearch")?.value||"").trim().toLowerCase();const rows=groups.filter(g=>!q||(g.name||"").toLowerCase().includes(q));box.innerHTML=rows.length?rows.map(g=>{const ms=groupMemberUsers(g).slice(0,4);return`<button class="chat-item" onclick="openGroupChat('${esc(g.id)}')"><span class="group-avatar-mini">${ms.map(u=>`<img src="${esc(avatar(u))}" alt="">`).join("")}</span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${(g.memberUids||[]).length} জন সদস্য · ${esc((g.memberUids||[]).includes(me.uid)?"আপনি সদস্য":"")}</small></span><span class="item-meta"><i class="fa-solid fa-chevron-right"></i></span></button>`}).join(""):`<div class="empty"><i class="fa-solid fa-user-group" style="font-size:28px;display:block;margin-bottom:10px"></i>এখনও কোনো গ্রুপ নেই।<br>নতুন গ্রুপ তৈরি করে আপনার বন্ধুদের যোগ করুন।</div>`}
 function renderGroupPicker(){const box=$("groupFriendPicker"),count=$("groupMemberCount");if(!box)return;const fs=friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User",email:""});if(!fs.length){box.innerHTML='<div class="empty" style="padding:25px 10px;background:transparent;border:0">আগে অন্তত একজন বন্ধুকে Add করুন, তারপর গ্রুপ তৈরি করতে পারবেন।</div>';$("saveGroupBtn").disabled=true;return}box.innerHTML=fs.map(u=>`<label class="group-friend-row"><input type="checkbox" value="${esc(u.uid)}"><img src="${esc(avatar(u))}" alt=""><span class="item-copy"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></span></label>`).join("");const update=()=>{const n=box.querySelectorAll("input:checked").length;count.textContent=`${n} জন নির্বাচিত`;$("saveGroupBtn").disabled=n<1};box.querySelectorAll("input").forEach(x=>x.onchange=update);update()}
 function showGroupModal(){if(!me)return;$("groupNameInput").value="";$("groupModal").classList.remove("hidden");renderGroupPicker();setTimeout(()=>$("groupNameInput").focus(),50)}
-async function createGroup(){const name=$("groupNameInput").value.trim();const selected=[...document.querySelectorAll("#groupFriendPicker input:checked")].map(x=>x.value);if(!name)return toast("গ্রুপের নাম দিন");if(!selected.length)return toast("অন্তত একজন বন্ধুকে নির্বাচন করুন");if(!selected.every(isFriend))return toast("শুধু আপনার বন্ধুদেরই গ্রুপে যোগ করা যাবে");const btn=$("saveGroupBtn");btn.disabled=true;try{const memberUids=[me.uid,...selected.filter(x=>x!==me.uid)];const ref=GROUPS().doc();await ref.set({name,ownerUid:me.uid,memberUids,createdAt:firebase.firestore.FieldValue.serverTimestamp()});$("groupModal").classList.add("hidden");toast("গ্রুপ তৈরি হয়েছে");showView("groupsView");}catch(e){console.error("createGroup",e);toast(e?.code==="permission-denied"?"গ্রুপ তৈরি করার permission নেই। Firestore rules পরীক্ষা করুন":"গ্রুপ তৈরি করা যায়নি")}finally{btn.disabled=false}}
+async function createGroup(){
+  const name=$("groupNameInput").value.trim();
+  const selected=[...document.querySelectorAll("#groupFriendPicker input:checked")].map(x=>x.value);
+  if(!name)return toast("গ্রুপের নাম দিন");
+  if(!selected.length)return toast("অন্তত একজন বন্ধুকে নির্বাচন করুন");
+  if(!selected.every(isFriend))return toast("শুধু আপনার বন্ধুদেরই গ্রুপে যোগ করা যাবে");
+
+  const btn=$("saveGroupBtn");
+  btn.disabled=true;
+  try{
+    const memberUids=[me.uid,...selected.filter(x=>x!==me.uid)];
+    const ref=GROUPS().doc();
+
+    // Write to Firebase first.
+    await ref.set({
+      name,
+      ownerUid:me.uid,
+      memberUids,
+      createdAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Optimistic/local update: do not wait for the realtime listener to repaint Home.
+    // This prevents a newly-created group from appearing only after a search-key event.
+    const newGroup={
+      id:ref.id,
+      name,
+      ownerUid:me.uid,
+      memberUids,
+      createdAt:Date.now()
+    };
+    groups=[newGroup,...groups.filter(g=>String(g.id)!==String(newGroup.id))];
+    groupsSyncReady=true;
+    saveLocal("groups",groups);
+
+    const rooms=buildChatRoomCache();
+    if(rooms.length)saveLocal("chatRooms",rooms);
+
+    renderGroups();
+    renderChats(rooms);
+
+    $("groupModal").classList.add("hidden");
+    toast("গ্রুপ তৈরি হয়েছে");
+    showView("groupsView");
+  }catch(e){
+    console.error("createGroup",e);
+    toast(e?.code==="permission-denied"?"গ্রুপ তৈরি করার permission নেই। Firestore rules পরীক্ষা করুন":"গ্রুপ তৈরি করা যায়নি");
+  }finally{
+    btn.disabled=false;
+  }
+}
 function renderPeople(){const q=($("peopleSearch")?.value||"").trim().toLowerCase();let rows=peopleTab==="friends"?friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User"}):peopleTab==="requests"?requests.map(r=>users.find(u=>u.uid===r.senderUid)||{uid:r.senderUid,displayName:"User"}):users;if(q)rows=rows.filter(u=>(u.displayName||"").toLowerCase().includes(q)||(u.email||"").toLowerCase().includes(q));const box=$("peopleList");box.innerHTML=rows.length?rows.map(u=>{const pending=requests.find(r=>r.senderUid===u.uid),sent=sentRequests.find(r=>r.receiverUid===u.uid),f=isFriend(u.uid);let actions=f?`<button class="small-btn primary" onclick="openChat('${u.uid}')">Message</button>`:(pending||sent)?`<button class="small-btn" disabled>Pending</button>`:`<button class="small-btn primary" onclick="sendRequest('${u.uid}')">Add friend</button>`;if(peopleTab==="requests"&&pending)actions=`<button class="small-btn primary" onclick="acceptRequest('${pending.id}','${u.uid}')">Accept</button><button class="small-btn danger" onclick="rejectRequest('${pending.id}')">Decline</button>`;return`<div class="person-item"><img class="avatar" src="${esc(avatar(u))}"><div class="item-copy" onclick="openUser('${u.uid}')"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></div><div class="person-actions">${actions}</div></div>`}).join(""):`<div class="empty">কোনো user পাওয়া যায়নি।</div>`}
 async function sendRequest(uid){
   if(!me||!uid||uid===me.uid)return;
