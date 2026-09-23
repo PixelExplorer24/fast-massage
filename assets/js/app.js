@@ -109,6 +109,7 @@ const CALLS=()=>new RTCollection("calls");
 const IMAGE_UPLOAD_KEY="1abc9f66636c45ace1d0952e080d153d";
 const FILE_UPLOAD_ENDPOINT="https://upload.gofile.io/uploadfile";
 let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=[],activeFriend=null,chatUnsubs=[],listUnsubs=[],typingUnsub=null,typingTimer=null,attachedImages=[],attachedFiles=[],messageMap=new Map(),activeMessageMap=new Map(),peopleTab="friends";
+let chatPrefs={};
 const CACHE_PREFIX="fm_cache_v12_";
 const PERSISTENT_FRIENDS_PREFIX="fm_friend_registry_v1_";
 const PERSISTENT_ROOMS_PREFIX="fm_chat_rooms_registry_v1_";
@@ -647,7 +648,108 @@ function syncProfile(){
   $("editName").value=name;
   $("editPhoto").value=profile.photoURL||"";
   $("editBio").value=profile.bio||"";
-}async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();const base={uid:me.uid,displayName:me.displayName||me.email?.split("@")[0]||"User",email:me.email||"",photoURL:me.photoURL||null,lastSeen:firebase.firestore.FieldValue.serverTimestamp(),online:true};if(!snap.exists)await ref.set(base);else await ref.set({lastSeen:base.lastSeen,online:true},{merge:true});profile={...base,...(snap.exists?snap.data():{})};
+
+}
+function normalizeChatPrefs(v){
+  const out={};
+  if(v&&typeof v==="object"&&!Array.isArray(v)){
+    Object.entries(v).forEach(([k,x])=>{
+      if(!x||typeof x!=="object")return;
+      out[String(k)]={
+        pinned:x.pinned===true,
+        deletedAt:Number(x.deletedAt)||0,
+        blocked:x.blocked===true
+      };
+    });
+  }
+  return out;
+}
+function chatPrefId(kind,id){return kind==="group"?`group:${String(id)}`:String(id)}
+function getChatPref(kind,id){
+  return chatPrefs[chatPrefId(kind,id)]||{pinned:false,deletedAt:0,blocked:false};
+}
+function cacheChatPrefs(){try{localStorage.setItem(cacheKey("chatPrefs"),JSON.stringify(chatPrefs))}catch(_){}}
+async function loadChatPrefs(){
+  if(!me)return;
+  const cached=loadLocal("chatPrefs",{});
+  chatPrefs=normalizeChatPrefs(cached);
+  try{
+    const snap=await USERS().doc(me.uid).get();
+    const remote=normalizeChatPrefs(snap.data()?.chatPrefs);
+    chatPrefs={...chatPrefs,...remote};
+    saveLocal("chatPrefs",chatPrefs);
+  }catch(e){console.warn("chat preferences load",e)}
+}
+async function saveChatPref(kind,id,patch){
+  if(!me||!id)return;
+  const key=chatPrefId(kind,id);
+  const next={...getChatPref(kind,id),...patch};
+  chatPrefs[key]=next;
+  saveLocal("chatPrefs",chatPrefs);
+  try{
+    await USERS().doc(me.uid).set({chatPrefs},{merge:true});
+  }catch(e){
+    console.warn("chat preference sync",e);
+    toast(e?.code==="permission-denied"?"Chat preference save করার permission নেই":"Chat preference save করা যায়নি");
+  }
+}
+function isChatBlocked(uid){return !uid?false:getChatPref("friend",uid).blocked}
+function chatSortTime(m){return m?(m.createdAt?.toMillis?.()||Number(m.createdAt)||0):0}
+function chatRoomLastMessage(kind,id){
+  let latest=null,latestT=0;
+  messageMap.forEach(m=>{
+    const same=kind==="group"
+      ?String(m.groupId||"")===String(id)
+      :(String(m.senderUid)===String(id)&&String(m.receiverUid)===String(me?.uid)) ||
+       (String(m.senderUid)===String(me?.uid)&&String(m.receiverUid)===String(id));
+    if(same){
+      const t=chatSortTime(m);
+      if(t>=latestT){latest=m;latestT=t}
+    }
+  });
+  return latest;
+}
+async function toggleChatPin(kind,id){
+  const p=getChatPref(kind,id);
+  await saveChatPref(kind,id,{pinned:!p.pinned});
+  renderChats();
+  toast(!p.pinned?"চ্যাটটি পিন করা হয়েছে":"চ্যাটটি আনপিন করা হয়েছে");
+}
+async function deleteChatCard(kind,id){
+  if(!me||!id)return;
+  if(!confirm("এই চ্যাট কার্ডটি হোম পেইজ থেকে মুছে ফেলবেন? মেসেজগুলো ডাটাবেস থেকে মুছবে না।"))return;
+  await saveChatPref(kind,id,{deletedAt:Date.now()});
+  renderChats();
+  toast("চ্যাট কার্ড সরানো হয়েছে");
+}
+async function toggleUserBlock(uid){
+  if(!me||!uid)return;
+  const p=getChatPref("friend",uid);
+  const nextBlocked=!p.blocked;
+  await saveChatPref("friend",uid,{blocked:nextBlocked});
+  if(activeFriend&&String(activeFriend.uid)===String(uid)&&nextBlocked){
+    closeChat();
+  }
+  renderChats();
+  toast(nextBlocked?"ইউজার ব্লক করা হয়েছে":"ইউজার আনব্লক করা হয়েছে");
+}
+function chatActionMenu(kind,id){
+  const p=getChatPref(kind,id);
+  const blockAllowed=kind==="friend";
+  return `<div class="chat-card-menu hidden" data-chat-menu="${esc(chatPrefId(kind,id))}">
+    <button type="button" onclick="event.stopPropagation();toggleChatPin('${kind}','${esc(id)}')"><i class="fa-solid fa-thumbtack"></i><span>${p.pinned?"আনপিন":"পিন করুন"}</span></button>
+    ${blockAllowed?`<button type="button" class="${p.blocked?"":"menu-block"}" onclick="event.stopPropagation();toggleUserBlock('${esc(id)}')"><i class="fa-solid fa-${p.blocked?"unlock":"ban"}"></i><span>${p.blocked?"আনব্লক":"ব্লক করুন"}</span></button>`:""}
+    <button type="button" class="menu-delete" onclick="event.stopPropagation();deleteChatCard('${kind}','${esc(id)}')"><i class="fa-solid fa-trash-can"></i><span>কার্ড ডিলেট</span></button>
+  </div>`;
+}
+function toggleChatCardMenu(key,ev){
+  ev?.stopPropagation();
+  document.querySelectorAll(".chat-card-menu:not(.hidden)").forEach(m=>m.classList.add("hidden"));
+  const menu=document.querySelector(`[data-chat-menu="${CSS.escape(String(key))}"]`);
+  if(menu)menu.classList.toggle("hidden");
+}
+async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();const base={uid:me.uid,displayName:me.displayName||me.email?.split("@")[0]||"User",email:me.email||"",photoURL:me.photoURL||null,lastSeen:firebase.firestore.FieldValue.serverTimestamp(),online:true};if(!snap.exists)await ref.set(base);else await ref.set({lastSeen:base.lastSeen,online:true},{merge:true});profile={...base,...(snap.exists?snap.data():{})};
+   chatPrefs=normalizeChatPrefs(profile.chatPrefs||loadLocal("chatPrefs",{}));saveLocal("chatPrefs",chatPrefs);
   const googleName=me.displayName||profile.displayName||base.displayName;
   const googlePhoto=me.photoURL||profile.photoURL||null;
   const googleEmail=me.email||profile.email||"";
@@ -930,8 +1032,8 @@ function ensureUnreadChatStyles(){
   style.id="fm-unread-chat-styles";
   style.textContent=`
     .chat-item.unread-chat{
-      background:rgba(93, 173, 255, .16) !important;
-      background-color:rgba(93, 173, 255, .16) !important;
+      background:rgba(91, 177, 255, .20) !important;
+      background-color:rgba(91, 177, 255, .20) !important;
       border-color:rgba(67, 153, 239, .28) !important;
     }
     .chat-item.unread-chat:hover{
@@ -1004,65 +1106,43 @@ async function markConversationRead(uid){
 }
 
 function renderChats(){
-  // Single source of truth for Home chat rendering.
-  // This function is intentionally safe to call from:
-  // 1) initial page load,
-  // 2) Firebase snapshots,
-  // 3) search input changes,
-  // 4) group creation / refresh.
   const box=$("chatList");
   if(!box)return;
   box.classList.remove("hidden");
-
-  // Auth may not be restored yet. Do not destroy the existing/cached DOM.
   if(!me)return;
-
   const q=String($("chatSearch")?.value||"").trim().toLowerCase();
+  ensureUnreadChatStyles();
 
-  // Warm local state first so a hard refresh never depends on typing in search.
   const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
   const cachedFriendRooms=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
   const cachedGroupRooms=cachedRooms.filter(x=>x.kind==="group").map(x=>x.group).filter(Boolean);
-
-  // If Firebase has not populated an array yet, recover it from the persistent room cache.
   const roomFriends=friends.length?friends:cachedFriendRooms;
   const roomGroups=groups.length?groups:cachedGroupRooms;
 
-  const all=[...messageMap.values()].sort((a,b)=>
-    (b.createdAt?.toMillis?.()||Number(b.createdAt)||0)-
-    (a.createdAt?.toMillis?.()||Number(a.createdAt)||0)
-  );
-
+  const all=[...messageMap.values()].sort((a,b)=>chatSortTime(b)-chatSortTime(a));
   const by=new Map();
   for(const m of all){
     if(m.groupId)continue;
     const uid=String(m.senderUid)===String(me.uid)?m.receiverUid:m.senderUid;
-    if(uid&&!by.has(uid))by.set(String(uid),m);
+    if(uid&&!by.has(String(uid)))by.set(String(uid),m);
   }
-
-  // Friends are rooms even when there is no message yet.
   roomFriends.forEach(f=>{
     const uid=String(f?.friendUid||f?.uid||"");
     if(uid&&!by.has(uid))by.set(uid,null);
   });
 
-  const cachedFriendProfiles=new Map(
-    cachedFriendRooms
-      .map(f=>[String(f?.friendUid||f?.uid||""),f])
-      .filter(([uid])=>uid)
-  );
+  const cachedFriendProfiles=new Map(cachedFriendRooms.map(f=>[
+    String(f?.friendUid||f?.uid||""),f
+  ]).filter(([uid])=>uid));
 
   let rows=[...by.entries()].map(([uid,m])=>{
     const liveUser=users.find(x=>String(x.uid)===uid);
     const liveFriend=friends.find(x=>String(x.friendUid)===uid);
     const cachedProfile=cachedFriendProfiles.get(uid);
-    return {
-      uid,m,
-      u:{...(cachedProfile||{}),...(liveFriend||{}),...(liveUser||{}),uid}
-    };
+    const latest=chatRoomLastMessage("friend",uid)||m;
+    return {uid,m:latest,u:{...(cachedProfile||{}),...(liveFriend||{}),...(liveUser||{}),uid}};
   });
 
-  // Empty search MUST mean "show everything".
   if(q){
     rows=rows.filter(r=>
       String(r.u.displayName||"").toLowerCase().includes(q)||
@@ -1071,60 +1151,65 @@ function renderChats(){
     );
   }
 
-  const groupRows=roomGroups
-    .filter(g=>!q||String(g?.name||"").toLowerCase().includes(q))
-    .map(g=>{
-      const m=all
-        .filter(x=>String(x.groupId||"")===String(g.id||""))
-        .sort((a,b)=>
-          (b.createdAt?.toMillis?.()||Number(b.createdAt)||0)-
-          (a.createdAt?.toMillis?.()||Number(a.createdAt)||0)
-        )[0];
-
-      const preview=m?.type==="call"
-        ?((m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(m))
-        :m?.text||
-          ((m?.imageUrls||[]).length?"📷 ছবি":
-          m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
-
-      return `<button class="chat-item" data-chat-group="${esc(g.id)}" onclick="openGroupChat('${esc(g.id)}')">
-        <span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span>
-        <span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${esc(preview)}</small></span>
-        <time class="item-meta">${m?time(m.createdAt):"Group"}</time>
-      </button>`;
-    }).join("");
-
-  const personal=rows.map(r=>{
-    const preview=r.m?.type==="call"
-      ?((r.m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(r.m))
-      :r.m?.text||
-        ((r.m?.imageUrls||[]).length?"📷 Image":
-        r.m?.fileName?"📎 "+r.m.fileName:"Start a conversation");
-
-    const unreadCount=getUnreadCount(r.uid);
+  const friendRows=rows.map(r=>{
+    const p=getChatPref("friend",r.uid);
+    const lastTime=chatSortTime(r.m);
+    const blocked=p.blocked;
+    if(!blocked&&p.deletedAt&&lastTime<=p.deletedAt)return null;
+    const unreadCount=blocked?0:getUnreadCount(r.uid);
     const unreadClass=unreadCount>0?" unread-chat":"";
     const badge=unreadCount>0
-      ?`<span class="unread-badge" aria-label="${unreadCount} unread messages">${unreadCount>99?"99+":unreadCount}</span>`
-      :"";
+      ?`<span class="unread-badge" aria-label="${unreadCount} unread messages">${unreadCount>99?"99+":unreadCount}</span>`:"";
+    const preview=blocked?"🚫 ইউজার ব্লক করা আছে":
+      r.m?.type==="call"?((r.m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(r.m)):
+      r.m?.text||((r.m?.imageUrls||[]).length?"📷 Image":r.m?.fileName?"📎 "+r.m.fileName:"Start a conversation");
 
-    return `<button class="chat-item${unreadClass}" data-chat-uid="${esc(r.uid)}" onclick="openChat('${esc(r.uid)}')">
-      <img class="avatar" src="${esc(avatar(r.u))}" alt="">
-      <span class="item-copy"><strong>${esc(r.u.displayName||r.u.email||"User")}</strong><small>${esc(preview)}</small></span>
-      ${badge}<time class="item-meta">${r.m?time(r.m.createdAt):"Friend"}</time>
-    </button>`;
-  }).join("");
+    return {
+      kind:"friend",id:r.uid,pinned:p.pinned,blocked,
+      time:lastTime,
+      html:`<div class="chat-item${unreadClass}${p.pinned?" pinned-chat":""}${blocked?" blocked-chat":""}" data-chat-card="${esc(r.uid)}">
+        <button type="button" class="chat-main" onclick="${blocked?`toggleChatCardMenu('${esc(r.uid)}',event)`:`openChat('${esc(r.uid)}')`}">
+          <img class="avatar" src="${esc(avatar(r.u))}" alt="">
+          <span class="item-copy"><strong>${esc(r.u.displayName||r.u.email||"User")}${p.pinned?` <i class="fa-solid fa-thumbtack pinned-icon" title="Pinned"></i>`:""}</strong><small>${esc(preview)}</small></span>
+          ${badge}<time class="item-meta">${r.m?time(r.m.createdAt):"Friend"}</time>
+        </button>
+        <button type="button" class="chat-more-btn" title="Chat options" aria-label="Chat options" onclick="toggleChatCardMenu('${esc(r.uid)}',event)"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+        ${chatActionMenu("friend",r.uid)}
+      </div>`
+    };
+  }).filter(Boolean);
 
-  const markup=groupRows+personal;
-  box.innerHTML=markup||`<div class="empty"><i class="fa-regular fa-comments" style="font-size:28px;display:block;margin-bottom:10px"></i>কোনো conversation নেই। People থেকে একজনকে বেছে নিয়ে chat শুরু করুন।</div>`;
+  const groupRows=roomGroups.map(g=>{
+    const p=getChatPref("group",g.id);
+    const m=chatRoomLastMessage("group",g.id);
+    const lastTime=chatSortTime(m);
+    if(p.deletedAt&&lastTime<=p.deletedAt)return null;
+    if(q&&!String(g?.name||"").toLowerCase().includes(q))return null;
+    const preview=m?.type==="call"?((m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(m)):
+      m?.text||((m?.imageUrls||[]).length?"📷 ছবি":m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
+    return {
+      kind:"group",id:g.id,pinned:p.pinned,time:lastTime,
+      html:`<div class="chat-item${p.pinned?" pinned-chat":""}" data-chat-card="group:${esc(g.id)}">
+        <button type="button" class="chat-main" onclick="openGroupChat('${esc(g.id)}')">
+          <span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span>
+          <span class="item-copy"><strong>${esc(g.name||"Unnamed group")}${p.pinned?` <i class="fa-solid fa-thumbtack pinned-icon"></i>`:""}</strong><small>${esc(preview)}</small></span>
+          <time class="item-meta">${m?time(m.createdAt):"Group"}</time>
+        </button>
+        <button type="button" class="chat-more-btn" title="Group options" aria-label="Group options" onclick="toggleChatCardMenu('group:${esc(g.id)}',event)"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+        ${chatActionMenu("group",g.id)}
+      </div>`
+    };
+  }).filter(Boolean);
 
-  // Persist the same room set used by the renderer, including groups with no messages.
-  const snapshot=normalizeChatRooms([
-    ...cachedRooms,
-    ...buildChatRoomCache()
-  ]);
+  const rooms=[...groupRows,...friendRows].sort((a,b)=>{
+    if(a.pinned!==b.pinned)return a.pinned?-1:1;
+    return (b.time||0)-(a.time||0);
+  });
+  box.innerHTML=rooms.map(r=>r.html).join("")||`<div class="empty"><i class="fa-regular fa-comments" style="font-size:28px;display:block;margin-bottom:10px"></i>কোনো conversation নেই। People থেকে একজনকে বেছে নিয়ে chat শুরু করুন।</div>`;
+
+  const snapshot=normalizeChatRooms([...cachedRooms,...buildChatRoomCache()]);
   if(snapshot.length)saveLocal("chatRooms",snapshot);
 }
-
 function renderGroups(){const box=$("groupList");if(!box)return;const q=($("groupSearch")?.value||"").trim().toLowerCase();const rows=groups.filter(g=>!q||(g.name||"").toLowerCase().includes(q));box.innerHTML=rows.length?rows.map(g=>{const ms=groupMemberUsers(g).slice(0,4);return`<button class="chat-item" onclick="openGroupChat('${esc(g.id)}')"><span class="group-avatar-mini">${ms.map(u=>`<img src="${esc(avatar(u))}" alt="">`).join("")}</span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${(g.memberUids||[]).length} জন সদস্য · ${esc((g.memberUids||[]).includes(me.uid)?"আপনি সদস্য":"")}</small></span><span class="item-meta"><i class="fa-solid fa-chevron-right"></i></span></button>`}).join(""):`<div class="empty"><i class="fa-solid fa-user-group" style="font-size:28px;display:block;margin-bottom:10px"></i>এখনও কোনো গ্রুপ নেই।<br>নতুন গ্রুপ তৈরি করে আপনার বন্ধুদের যোগ করুন।</div>`}
 function renderGroupPicker(){const box=$("groupFriendPicker"),count=$("groupMemberCount");if(!box)return;const fs=friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User",email:""});if(!fs.length){box.innerHTML='<div class="empty" style="padding:25px 10px;background:transparent;border:0">আগে অন্তত একজন বন্ধুকে Add করুন, তারপর গ্রুপ তৈরি করতে পারবেন।</div>';$("saveGroupBtn").disabled=true;return}box.innerHTML=fs.map(u=>`<label class="group-friend-row"><input type="checkbox" value="${esc(u.uid)}"><img src="${esc(avatar(u))}" alt=""><span class="item-copy"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></span></label>`).join("");const update=()=>{const n=box.querySelectorAll("input:checked").length;count.textContent=`${n} জন নির্বাচিত`;$("saveGroupBtn").disabled=n<1};box.querySelectorAll("input").forEach(x=>x.onchange=update);update()}
 function showGroupModal(){if(!me)return;$("groupNameInput").value="";$("groupModal").classList.remove("hidden");renderGroupPicker();setTimeout(()=>$("groupNameInput").focus(),50)}
@@ -2380,10 +2465,11 @@ $("logoutBtn").onclick=async()=>{
     stopListeners();
     try{await auth.signOut();}catch(e){console.error("signOut",e);toast("Logout করা যায়নি");return;}
     localStorage.removeItem("fm_session_uid");
-    me=null;profile=null;friends=[];requests=[];sentRequests=[];users=[];groups=[];messageMap.clear();
+    me=null;profile=null;chatPrefs={};friends=[];requests=[];sentRequests=[];users=[];groups=[];messageMap.clear();
   }
 };
 document.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>$(b.dataset.close).classList.add("hidden"));
+document.addEventListener("click",e=>{if(!e.target.closest(".chat-card-menu")&&!e.target.closest(".chat-more-btn"))document.querySelectorAll(".chat-card-menu:not(.hidden)").forEach(m=>m.classList.add("hidden"));});
 $("chatInfo").onclick=()=>{if(!activeFriend)return;if(activeFriend.isGroup){toast(`${activeFriend.name||"Group"} · ${(activeFriend.memberUids||[]).length} জন সদস্য`);return}openUser(activeFriend.uid)};
 $("closeLightbox").onclick=()=>{$("lightbox").classList.add("hidden");$("lightboxImg").src=""};
 
