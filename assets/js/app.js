@@ -1837,12 +1837,9 @@ async function prefetchNextHistoryPages(){
 }
 
 let fmImageZoom=1;
-let fmImagePanX=0;
-let fmImagePanY=0;
 let fmViewerSourceUrl='';
-let fmViewerPointers=new Map();
-let fmViewerDrag=null;
-let fmViewerPinch=null;
+let fmViewerPanzoom=null;
+let fmViewerPanzoomReady=false;
 let fmViewerLastTap=0;
 
 function ensureImageViewer(){
@@ -1860,144 +1857,88 @@ function ensureImageViewer(){
         <i class="fa-solid fa-xmark" aria-hidden="true"></i>
       </button>
       <div class="fm-image-stage" id="fmImageStage">
-        <img id="fmViewerImage" alt="Image preview" draggable="false">
+        <div class="fm-panzoom-wrap" id="fmPanzoomWrap">
+          <img id="fmViewerImage" alt="Image preview" draggable="false">
+        </div>
         <div class="fm-image-viewer-hint">Wheel / pinch = zoom • drag = pan • double click = reset</div>
       </div>
     </div>`;
   document.body.appendChild(el);
 
   const stage=$('fmImageStage');
+  const wrap=$('fmPanzoomWrap');
   const img=$('fmViewerImage');
-  const closeViewerButton=$('fmImageViewerClose');
   const closeViewer=()=>closeImageViewer();
-  closeViewerButton?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();closeViewer();});
-  $('fmImageViewer').querySelector('.fm-image-viewer-backdrop')?.addEventListener('click',closeViewer);
+  $('fmImageViewerClose')?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();closeViewer();});
+  el.querySelector('.fm-image-viewer-backdrop')?.addEventListener('click',closeViewer);
   el.addEventListener('keydown',e=>{if(e.key==='Escape')closeViewer();});
   el.tabIndex=-1;
 
-  stage.addEventListener('wheel',e=>{
-    e.preventDefault();
-    const direction=e.deltaY<0?1:-1;
-    zoomImage(direction*.18,e.clientX,e.clientY);
-  },{passive:false});
-
-  stage.addEventListener('pointerdown',e=>{
-    if(e.button!==undefined && e.button!==0)return;
-    fmViewerPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    stage.setPointerCapture?.(e.pointerId);
-    if(fmViewerPointers.size===2){
-      const pts=[...fmViewerPointers.values()];
-      const dx=pts[0].x-pts[1].x,dy=pts[0].y-pts[1].y;
-      fmViewerPinch={distance:Math.hypot(dx,dy),zoom:fmImageZoom,center:{x:(pts[0].x+pts[1].x)/2,y:(pts[0].y+pts[1].y)/2}};
-      fmViewerDrag=null;
-      return;
-    }
-    if(fmViewerPointers.size===1){
-      fmViewerDrag={pointerId:e.pointerId,startX:e.clientX,startY:e.clientY,startPanX:fmImagePanX,startPanY:fmImagePanY,moved:false};
-      stage.classList.add('is-dragging');
-    }
-  });
-
-  stage.addEventListener('pointermove',e=>{
-    if(fmViewerPointers.has(e.pointerId))fmViewerPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    if(fmViewerPointers.size===2 && fmViewerPinch){
-      const pts=[...fmViewerPointers.values()];
-      const dx=pts[0].x-pts[1].x,dy=pts[0].y-pts[1].y;
-      const distance=Math.max(1,Math.hypot(dx,dy));
-      const ratio=distance/Math.max(1,fmViewerPinch.distance);
-      setImageZoom(fmViewerPinch.zoom*ratio,fmViewerPinch.center.x,fmViewerPinch.center.y);
-      return;
-    }
-    if(fmViewerDrag && fmViewerDrag.pointerId===e.pointerId && fmImageZoom>1){
-      const dx=e.clientX-fmViewerDrag.startX,dy=e.clientY-fmViewerDrag.startY;
-      if(Math.abs(dx)+Math.abs(dy)>3)fmViewerDrag.moved=true;
-      fmImagePanX=fmViewerDrag.startPanX+dx;
-      fmImagePanY=fmViewerDrag.startPanY+dy;
-      applyImageTransform(false);
-    }
-  });
-
-  const pointerEnd=e=>{
-    const drag=fmViewerDrag;
-    fmViewerPointers.delete(e.pointerId);
-    if(fmViewerPointers.size<2)fmViewerPinch=null;
-    if(fmViewerPointers.size===0){
-      stage.classList.remove('is-dragging');
-      if(drag && !drag.moved){
-        const now=Date.now();
-        if(now-fmViewerLastTap<320){
-          if(fmImageZoom>1.02)setImageZoom(1);
-          else setImageZoom(2);
-          fmViewerLastTap=0;
-        }else fmViewerLastTap=now;
-      }
-      fmViewerDrag=null;
-    }
+  const initPanzoom=()=>{
+    if(fmViewerPanzoomReady || !window.Panzoom || !wrap)return;
+    fmViewerPanzoom=window.Panzoom(wrap,{
+      maxScale:5,
+      minScale:1,
+      step:.25,
+      contain:'outside',
+      cursor:'grab',
+      startScale:1,
+      disablePan:false,
+      panOnlyWhenZoomed:true,
+      animate:true,
+      duration:180,
+      easing:'ease-out',
+      handleStartEvent:'pointerdown',
+      excludeClass:'panzoom-exclude'
+    });
+    fmViewerPanzoomReady=true;
+    wrap.classList.remove('is-dragging');
+    wrap.addEventListener('panzoomstart',()=>wrap.classList.add('is-dragging'));
+    wrap.addEventListener('panzoomend',()=>wrap.classList.remove('is-dragging'));
+    stage.addEventListener('wheel',e=>{
+      if($('fmImageViewer')?.classList.contains('hidden'))return;
+      e.preventDefault();e.stopPropagation();
+      fmViewerPanzoom?.zoomWithWheel?.(e);
+    },{passive:false});
+    stage.addEventListener('dblclick',e=>{
+      e.preventDefault();e.stopPropagation();
+      if(!fmViewerPanzoom)return;
+      try{fmViewerPanzoom.reset({animate:true})}catch(_){try{fmViewerPanzoom.reset()}catch(__){}}
+    });
   };
-  stage.addEventListener('pointerup',pointerEnd);
-  stage.addEventListener('pointercancel',pointerEnd);
-
-}
-
-function clampImagePan(){
-  const img=$('fmViewerImage');
-  if(!img)return;
-  if(fmImageZoom<=1){fmImagePanX=0;fmImagePanY=0;return;}
-  const maxX=Math.max(0,(img.offsetWidth*(fmImageZoom-1))/2);
-  const maxY=Math.max(0,(img.offsetHeight*(fmImageZoom-1))/2);
-  fmImagePanX=Math.max(-maxX,Math.min(maxX,fmImagePanX));
-  fmImagePanY=Math.max(-maxY,Math.min(maxY,fmImagePanY));
-}
-function applyImageTransform(animate=true){
-  const img=$("fmViewerImage");if(!img)return;
-  clampImagePan();
-  img.style.transition=animate?"transform .12s ease-out":"none";
-  img.style.transform=`translate3d(calc(-50% + ${fmImagePanX}px),calc(-50% + ${fmImagePanY}px),0) scale(${fmImageZoom})`;
-}
-function setImageZoom(value,focusX=null,focusY=null){
-  const old=fmImageZoom;
-  const next=Math.max(1,Math.min(5,Number(value)||1));
-  if(next===old){applyImageTransform(false);return}
-  fmImageZoom=next;
-  if(fmImageZoom<=1){fmImagePanX=0;fmImagePanY=0}
-  else if(focusX!==null&&focusY!==null){
-    const stage=$("fmImageStage"),rect=stage?.getBoundingClientRect();
-    if(rect){
-      const cx=focusX-(rect.left+rect.width/2),cy=focusY-(rect.top+rect.height/2),ratio=(fmImageZoom/Math.max(.001,old))-1;
-      fmImagePanX-=cx*ratio;fmImagePanY-=cy*ratio;
-    }
-  }
-  applyImageTransform(true);
-}
-function zoomImage(delta,focusX=null,focusY=null){
-  const step=Math.abs(delta)>1?delta:(delta>0?.25:-.25);
-  setImageZoom(fmImageZoom+step,focusX,focusY);
-}
-// Profile/photo lightbox entry point. Kept as a small compatibility API so
-// profile images can simply use onclick="viewImg(this.src)".
-function viewImg(url){
-  if(!url)return;
-  showImage(url);
+  img.addEventListener('load',()=>{
+    requestAnimationFrame(()=>{
+      initPanzoom();
+      try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
+    });
+  });
+  initPanzoom();
 }
 
 function showImage(url){
   if(!url)return;
   ensureImageViewer();
   fmViewerSourceUrl=url;
-  fmImageZoom=1;fmImagePanX=0;fmImagePanY=0;fmViewerLastTap=0;fmViewerPointers.clear();fmViewerDrag=null;fmViewerPinch=null;
-  const img=$('fmViewerImage');
+  const viewer=$('fmImageViewer'),img=$('fmViewerImage');
+  try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
   img.src=fmImageObjectUrls.get(url)||url;
   img.dataset.sourceUrl=url;
-  applyImageTransform(false);
-  $('fmImageViewer').classList.remove('hidden');
-  $('fmImageViewer').focus();
+  viewer.classList.remove('hidden');
   document.body.classList.add('fm-viewer-open');
+  viewer.focus({preventScroll:true});
+  requestAnimationFrame(()=>{
+    try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
+  });
 }
+
+// Compatibility API used by profile pictures.
+function viewImg(url){showImage(url)}
 function downloadViewerImage(){if(fmViewerSourceUrl)downloadOriginalImage(fmViewerSourceUrl)}
 function closeImageViewer(){
   const el=$('fmImageViewer');if(!el)return;
   el.classList.add('hidden');
-  fmViewerPointers.clear();fmViewerDrag=null;fmViewerPinch=null;fmImageZoom=1;fmImagePanX=0;fmViewerSourceUrl='';
+  try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
+  fmViewerSourceUrl='';
   document.body.classList.remove('fm-viewer-open');
 }
 
