@@ -374,3 +374,30 @@ body.dark .chat-panel .messages{background:var(--bg)}
 .reply-highlight .bubble{animation:replyFlash 1.2s ease both;}
 @keyframes replyFlash{0%,100%{box-shadow:0 2px 8px rgba(15,23,42,.03)}25%,65%{box-shadow:0 0 0 4px rgba(37,99,235,.16),0 8px 28px rgba(37,99,235,.18)}}
 @media(max-width:600px){.reply-preview{margin-bottom:6px;padding:7px 9px}.reply-quote{max-width:100%;}}
+
+
+/* ===== Stable natural image sizing =====
+   Keep every chat image's natural aspect ratio and show the complete image.
+   It may scale down only when its natural width is larger than the message area. */
+.media-bubble{max-width:100%;overflow:visible;}
+.media-bubble .msg-img,
+#messages .msg-img{
+  display:block;
+  width:auto;
+  height:auto;
+  max-width:100%;
+  max-height:none;
+  min-width:0;
+  min-height:0;
+  object-fit:contain;
+  object-position:center;
+  aspect-ratio:auto;
+}
+#messages .msg-img{margin-top:6px;border-radius:13px;}
+/* Viewer keeps the complete natural image visible initially; only the viewport
+   constrains it. Zoom is handled separately by Panzoom after opening. */
+.fm-panzoom-wrap{width:max-content;height:max-content;max-width:none;max-height:none;}
+.fm-panzoom-wrap img{width:auto;height:auto;max-width:92vw;max-height:88vh;object-fit:contain;object-position:center;}
+@media(max-width:700px){
+  .fm-panzoom-wrap img{max-width:96vw;max-height:88vh;}
+}
