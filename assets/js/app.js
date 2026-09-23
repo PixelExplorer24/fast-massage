@@ -1310,7 +1310,29 @@ function subscribeChat(uid){
   activeMessageMap=new Map([...messageMap.values()].filter(m=>activeFriend?.isGroup?m.groupId===uid:((m.senderUid===me.uid&&m.receiverUid===uid)||(m.senderUid===uid&&m.receiverUid===me.uid))).map(m=>[m.id,m]));
   renderMessages();
   const ref=MESSAGES();
-  const mergeSnap=s=>{const items=s.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()}));items.forEach(m=>{activeMessageMap.set(m.id,m);messageMap.set(m.id,m)});idbPutMessages(items).catch(()=>{});preloadMessageImages(items).catch(()=>{});renderMessages();hydrateRenderedMessageImages(items).catch(()=>{});};
+  const mergeSnap=s=>{
+    const items=s.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()}));
+    items.forEach(m=>{
+      // Reconcile the optimistic local message with the authoritative Firestore message.
+      // The clientMessageId is generated before upload, so the sender can replace the
+      // "Uploading…" bubble immediately when the write becomes visible in onSnapshot.
+      if(m.clientMessageId){
+        const pendingId=String(m.clientMessageId);
+        const pending=activeMessageMap.get(pendingId)||messageMap.get(pendingId);
+        if(pending?.localPending){
+          activeMessageMap.delete(pendingId);
+          messageMap.delete(pendingId);
+          (pending.imageUrls||[]).forEach(u=>{try{if(String(u).startsWith('blob:'))URL.revokeObjectURL(u)}catch(_){}});
+        }
+      }
+      activeMessageMap.set(m.id,m);
+      messageMap.set(m.id,m);
+    });
+    idbPutMessages(items).catch(()=>{});
+    preloadMessageImages(items).catch(()=>{});
+    renderMessages();
+    hydrateRenderedMessageImages(items).catch(()=>{});
+  };
   if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(mergeSnap));}
   else{
     chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(mergeSnap));
@@ -1420,7 +1442,7 @@ async function sendMessage(e){
     const fileDatas=[];
     for(const f of fileFiles)fileDatas.push(await uploadFile(f));
     const firstFile=fileDatas[0]||null;
-    const payload={senderUid:me.uid,text,imageUrls,imageUrl:imageUrls[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
+    const payload={senderUid:me.uid,clientMessageId:pendingId,text,imageUrls,imageUrl:imageUrls[0]||"",files:fileDatas.map(x=>({downloadPage:x.downloadPage||"",id:x.id||"",name:x.name||"",size:x.size||0,mimetype:x.mimetype||""})),fileUrl:firstFile?.downloadPage||"",fileId:firstFile?.id||"",fileName:firstFile?.name||"",fileSize:firstFile?.size||0,fileMime:firstFile?.mimetype||"",fileHost:fileDatas.length?"external":"",createdAt:firebase.firestore.FieldValue.serverTimestamp(),seen:false};
     if(activeFriend.isGroup){payload.groupId=activeFriend.uid;payload.groupMemberUids=activeFriend.memberUids||[];payload.groupMemberMap=Object.fromEntries((activeFriend.memberUids||[]).map(x=>[String(x),true]));}else payload.receiverUid=activeFriend.uid;
     const docRef=await MESSAGES().add(payload);
 
@@ -1430,6 +1452,8 @@ async function sendMessage(e){
     toast("Message sent");
     try{
       const real=normalizeLocalMessage({id:docRef.id,...payload,createdAtMs:Date.now()});
+      // The local optimistic bubble has already been removed above. Keep the real
+      // message in memory until the listener confirms it, avoiding any visual gap.
       activeMessageMap.set(real.id,real);messageMap.set(real.id,real);
       await idbPutMessages([real]);
     }catch(_){ }
@@ -1720,14 +1744,151 @@ async function prefetchNextHistoryPages(){
 }
 
 let fmImageZoom=1;
+let fmImagePanX=0;
+let fmImagePanY=0;
+let fmViewerSourceUrl='';
+let fmViewerPointers=new Map();
+let fmViewerDrag=null;
+let fmViewerPinch=null;
+let fmViewerLastTap=0;
+
 function ensureImageViewer(){
-  if($("fmImageViewer"))return;
-  const el=document.createElement("div");el.id="fmImageViewer";el.className="fm-image-viewer hidden";el.innerHTML=`<div class="fm-image-viewer-backdrop" onclick="closeImageViewer()"></div><div class="fm-image-viewer-card"><div class="fm-image-viewer-toolbar"><button type="button" onclick="zoomImage(-0.2)" title="Zoom out"><i class="fa-solid fa-minus"></i></button><button type="button" onclick="zoomImage(0.2)" title="Zoom in"><i class="fa-solid fa-plus"></i></button><button type="button" onclick="downloadViewerImage()" title="Download"><i class="fa-solid fa-download"></i></button><button type="button" onclick="closeImageViewer()" title="Close"><i class="fa-solid fa-xmark"></i></button></div><div class="fm-image-stage"><img id="fmViewerImage" alt="Image preview"></div></div>`;document.body.appendChild(el);
+  if($('fmImageViewer'))return;
+  const el=document.createElement('div');
+  el.id='fmImageViewer';
+  el.className='fm-image-viewer hidden';
+  el.setAttribute('role','dialog');
+  el.setAttribute('aria-modal','true');
+  el.setAttribute('aria-label','Image viewer');
+  el.innerHTML=`
+    <div class="fm-image-viewer-backdrop"></div>
+    <div class="fm-image-viewer-card">
+      <div class="fm-image-stage" id="fmImageStage">
+        <img id="fmViewerImage" alt="Image preview" draggable="false">
+        <div class="fm-image-viewer-hint">Wheel / pinch = zoom • drag = pan • double click = reset</div>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+
+  const stage=$('fmImageStage');
+  const img=$('fmViewerImage');
+
+  stage.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const direction=e.deltaY<0?1:-1;
+    zoomImage(direction*.18,e.clientX,e.clientY);
+  },{passive:false});
+
+  stage.addEventListener('pointerdown',e=>{
+    if(e.button!==undefined && e.button!==0)return;
+    fmViewerPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    stage.setPointerCapture?.(e.pointerId);
+    if(fmViewerPointers.size===2){
+      const pts=[...fmViewerPointers.values()];
+      const dx=pts[0].x-pts[1].x,dy=pts[0].y-pts[1].y;
+      fmViewerPinch={distance:Math.hypot(dx,dy),zoom:fmImageZoom,center:{x:(pts[0].x+pts[1].x)/2,y:(pts[0].y+pts[1].y)/2}};
+      fmViewerDrag=null;
+      return;
+    }
+    if(fmViewerPointers.size===1){
+      fmViewerDrag={pointerId:e.pointerId,startX:e.clientX,startY:e.clientY,startPanX:fmImagePanX,startPanY:fmImagePanY,moved:false};
+      stage.classList.add('is-dragging');
+    }
+  });
+
+  stage.addEventListener('pointermove',e=>{
+    if(fmViewerPointers.has(e.pointerId))fmViewerPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(fmViewerPointers.size===2 && fmViewerPinch){
+      const pts=[...fmViewerPointers.values()];
+      const dx=pts[0].x-pts[1].x,dy=pts[0].y-pts[1].y;
+      const distance=Math.max(1,Math.hypot(dx,dy));
+      const ratio=distance/Math.max(1,fmViewerPinch.distance);
+      setImageZoom(fmViewerPinch.zoom*ratio,fmViewerPinch.center.x,fmViewerPinch.center.y);
+      return;
+    }
+    if(fmViewerDrag && fmViewerDrag.pointerId===e.pointerId && fmImageZoom>1){
+      const dx=e.clientX-fmViewerDrag.startX,dy=e.clientY-fmViewerDrag.startY;
+      if(Math.abs(dx)+Math.abs(dy)>3)fmViewerDrag.moved=true;
+      fmImagePanX=fmViewerDrag.startPanX+dx;
+      fmImagePanY=fmViewerDrag.startPanY+dy;
+      applyImageTransform(false);
+    }
+  });
+
+  const pointerEnd=e=>{
+    const drag=fmViewerDrag;
+    fmViewerPointers.delete(e.pointerId);
+    if(fmViewerPointers.size<2)fmViewerPinch=null;
+    if(fmViewerPointers.size===0){
+      stage.classList.remove('is-dragging');
+      if(drag && !drag.moved){
+        const now=Date.now();
+        if(now-fmViewerLastTap<320){
+          if(fmImageZoom>1.02)setImageZoom(1);
+          else setImageZoom(2);
+          fmViewerLastTap=0;
+        }else fmViewerLastTap=now;
+      }
+      fmViewerDrag=null;
+    }
+  };
+  stage.addEventListener('pointerup',pointerEnd);
+  stage.addEventListener('pointercancel',pointerEnd);
+
 }
-function showImage(url){if(!url)return;ensureImageViewer();fmImageZoom=1;const img=$("fmViewerImage");img.src=fmImageObjectUrls.get(url)||url;img.dataset.sourceUrl=url;img.style.transform=`scale(${fmImageZoom})`;$("fmImageViewer").classList.remove("hidden");}
-function zoomImage(delta){const img=$("fmViewerImage");if(!img)return;fmImageZoom=Math.min(4,Math.max(.5,fmImageZoom+delta));img.style.transform=`scale(${fmImageZoom})`;}
-function downloadViewerImage(){const url=$("fmViewerImage")?.dataset.sourceUrl;if(url)downloadOriginalImage(url)}
-function closeImageViewer(){$("fmImageViewer")?.classList.add("hidden")}
+
+function clampImagePan(){
+  const img=$('fmViewerImage');
+  if(!img)return;
+  if(fmImageZoom<=1){fmImagePanX=0;fmImagePanY=0;return;}
+  const maxX=Math.max(0,(img.offsetWidth*(fmImageZoom-1))/2);
+  const maxY=Math.max(0,(img.offsetHeight*(fmImageZoom-1))/2);
+  fmImagePanX=Math.max(-maxX,Math.min(maxX,fmImagePanX));
+  fmImagePanY=Math.max(-maxY,Math.min(maxY,fmImagePanY));
+}
+function applyImageTransform(animate=true){
+  const img=$('fmViewerImage');if(!img)return;
+  clampImagePan();
+  img.style.transition=animate?'transform .12s ease-out':'none';
+  img.style.transform=`translate3d(calc(-50% + ${fmImagePanX}px),calc(-50% + ${fmImagePanY}px),0) scale(${fmImageZoom})`;
+}
+function setImageZoom(value,focusX=null,focusY=null){
+  const old=fmImageZoom;
+  fmImageZoom=Math.max(1,Math.min(5,value));
+  if(fmImageZoom<=1){fmImagePanX=0;fmImagePanY=0}
+  else if(focusX!==null && focusY!==null){
+    const stage=$('fmImageStage');
+    const rect=stage?.getBoundingClientRect();
+    if(rect){
+      const cx=focusX-(rect.left+rect.width/2),cy=focusY-(rect.top+rect.height/2);
+      const ratio=(fmImageZoom/Math.max(.001,old))-1;
+      fmImagePanX-=cx*ratio;
+      fmImagePanY-=cy*ratio;
+    }
+  }
+  applyImageTransform(true);
+}
+function zoomImage(delta,focusX=null,focusY=null){setImageZoom(fmImageZoom+delta,focusX,focusY)}
+
+function showImage(url){
+  if(!url)return;
+  ensureImageViewer();
+  fmViewerSourceUrl=url;
+  fmImageZoom=1;fmImagePanX=0;fmImagePanY=0;fmViewerLastTap=0;fmViewerPointers.clear();fmViewerDrag=null;fmViewerPinch=null;
+  const img=$('fmViewerImage');
+  img.src=fmImageObjectUrls.get(url)||url;
+  img.dataset.sourceUrl=url;
+  applyImageTransform(false);
+  $('fmImageViewer').classList.remove('hidden');
+  document.body.classList.add('fm-viewer-open');
+}
+function downloadViewerImage(){if(fmViewerSourceUrl)downloadOriginalImage(fmViewerSourceUrl)}
+function closeImageViewer(){
+  const el=$('fmImageViewer');if(!el)return;
+  el.classList.add('hidden');
+  fmViewerPointers.clear();fmViewerDrag=null;fmViewerPinch=null;fmImageZoom=1;fmImagePanX=0;fmViewerSourceUrl='';
+  document.body.classList.remove('fm-viewer-open');
+}
 
 async function downloadOriginalImage(url){
   if(!url)return;
