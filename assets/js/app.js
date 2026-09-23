@@ -25,6 +25,13 @@ function rtdbToMillis(v){
   if(v&&v.__rtdbTimestamp!=null)return Number(v.__rtdbTimestamp);
   return typeof v==="number"?v:Number(v)||0;
 }
+function messageTimeMs(m){
+  return Number(m?.createdAtMs)||rtdbToMillis(m?.createdAt)||Number(m?.timestamp)||0;
+}
+function isRelevantMessageForMe(m){
+  if(!m||!me)return false;
+  return String(m.senderUid)===String(me.uid)||String(m.receiverUid)===String(me.uid)||(Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(id=>String(id)===String(me.uid)));
+}
 function rtdbResolve(v,oldValue){
   if(v===RTDB_SERVER_TIMESTAMP)return rtdbNow();
   if(v===RTDB_DELETE)return undefined;
@@ -109,8 +116,7 @@ const CALLS=()=>new RTCollection("calls");
 const IMAGE_UPLOAD_KEY="1abc9f66636c45ace1d0952e080d153d";
 const FILE_UPLOAD_ENDPOINT="https://upload.gofile.io/uploadfile";
 let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=[],activeFriend=null,chatUnsubs=[],listUnsubs=[],typingUnsub=null,typingTimer=null,attachedImages=[],attachedFiles=[],messageMap=new Map(),activeMessageMap=new Map(),peopleTab="friends";
-let chatPrefs={};
-const CACHE_PREFIX="fm_cache_v12_";
+const CACHE_PREFIX="fm_cache_v13_";
 const PERSISTENT_FRIENDS_PREFIX="fm_friend_registry_v1_";
 const PERSISTENT_ROOMS_PREFIX="fm_chat_rooms_registry_v1_";
 let friendsSyncReady=false,groupsSyncReady=false,messagesSyncReady=false;
@@ -648,108 +654,7 @@ function syncProfile(){
   $("editName").value=name;
   $("editPhoto").value=profile.photoURL||"";
   $("editBio").value=profile.bio||"";
-
-}
-function normalizeChatPrefs(v){
-  const out={};
-  if(v&&typeof v==="object"&&!Array.isArray(v)){
-    Object.entries(v).forEach(([k,x])=>{
-      if(!x||typeof x!=="object")return;
-      out[String(k)]={
-        pinned:x.pinned===true,
-        deletedAt:Number(x.deletedAt)||0,
-        blocked:x.blocked===true
-      };
-    });
-  }
-  return out;
-}
-function chatPrefId(kind,id){return kind==="group"?`group:${String(id)}`:String(id)}
-function getChatPref(kind,id){
-  return chatPrefs[chatPrefId(kind,id)]||{pinned:false,deletedAt:0,blocked:false};
-}
-function cacheChatPrefs(){try{localStorage.setItem(cacheKey("chatPrefs"),JSON.stringify(chatPrefs))}catch(_){}}
-async function loadChatPrefs(){
-  if(!me)return;
-  const cached=loadLocal("chatPrefs",{});
-  chatPrefs=normalizeChatPrefs(cached);
-  try{
-    const snap=await USERS().doc(me.uid).get();
-    const remote=normalizeChatPrefs(snap.data()?.chatPrefs);
-    chatPrefs={...chatPrefs,...remote};
-    saveLocal("chatPrefs",chatPrefs);
-  }catch(e){console.warn("chat preferences load",e)}
-}
-async function saveChatPref(kind,id,patch){
-  if(!me||!id)return;
-  const key=chatPrefId(kind,id);
-  const next={...getChatPref(kind,id),...patch};
-  chatPrefs[key]=next;
-  saveLocal("chatPrefs",chatPrefs);
-  try{
-    await USERS().doc(me.uid).set({chatPrefs},{merge:true});
-  }catch(e){
-    console.warn("chat preference sync",e);
-    toast(e?.code==="permission-denied"?"Chat preference save করার permission নেই":"Chat preference save করা যায়নি");
-  }
-}
-function isChatBlocked(uid){return !uid?false:getChatPref("friend",uid).blocked}
-function chatSortTime(m){return m?(m.createdAt?.toMillis?.()||Number(m.createdAt)||0):0}
-function chatRoomLastMessage(kind,id){
-  let latest=null,latestT=0;
-  messageMap.forEach(m=>{
-    const same=kind==="group"
-      ?String(m.groupId||"")===String(id)
-      :(String(m.senderUid)===String(id)&&String(m.receiverUid)===String(me?.uid)) ||
-       (String(m.senderUid)===String(me?.uid)&&String(m.receiverUid)===String(id));
-    if(same){
-      const t=chatSortTime(m);
-      if(t>=latestT){latest=m;latestT=t}
-    }
-  });
-  return latest;
-}
-async function toggleChatPin(kind,id){
-  const p=getChatPref(kind,id);
-  await saveChatPref(kind,id,{pinned:!p.pinned});
-  renderChats();
-  toast(!p.pinned?"চ্যাটটি পিন করা হয়েছে":"চ্যাটটি আনপিন করা হয়েছে");
-}
-async function deleteChatCard(kind,id){
-  if(!me||!id)return;
-  if(!confirm("এই চ্যাট কার্ডটি হোম পেইজ থেকে মুছে ফেলবেন? মেসেজগুলো ডাটাবেস থেকে মুছবে না।"))return;
-  await saveChatPref(kind,id,{deletedAt:Date.now()});
-  renderChats();
-  toast("চ্যাট কার্ড সরানো হয়েছে");
-}
-async function toggleUserBlock(uid){
-  if(!me||!uid)return;
-  const p=getChatPref("friend",uid);
-  const nextBlocked=!p.blocked;
-  await saveChatPref("friend",uid,{blocked:nextBlocked});
-  if(activeFriend&&String(activeFriend.uid)===String(uid)&&nextBlocked){
-    closeChat();
-  }
-  renderChats();
-  toast(nextBlocked?"ইউজার ব্লক করা হয়েছে":"ইউজার আনব্লক করা হয়েছে");
-}
-function chatActionMenu(kind,id){
-  const p=getChatPref(kind,id);
-  const blockAllowed=kind==="friend";
-  return `<div class="chat-card-menu hidden" data-chat-menu="${esc(chatPrefId(kind,id))}">
-    <button type="button" onclick="event.stopPropagation();toggleChatPin('${kind}','${esc(id)}')"><i class="fa-solid fa-thumbtack"></i><span>${p.pinned?"আনপিন":"পিন করুন"}</span></button>
-    ${blockAllowed?`<button type="button" class="${p.blocked?"":"menu-block"}" onclick="event.stopPropagation();toggleUserBlock('${esc(id)}')"><i class="fa-solid fa-${p.blocked?"unlock":"ban"}"></i><span>${p.blocked?"আনব্লক":"ব্লক করুন"}</span></button>`:""}
-    <button type="button" class="menu-delete" onclick="event.stopPropagation();deleteChatCard('${kind}','${esc(id)}')"><i class="fa-solid fa-trash-can"></i><span>কার্ড ডিলেট</span></button>
-  </div>`;
-}
-function toggleChatCardMenu(key,ev){
-  ev?.stopPropagation();
-  document.querySelectorAll(".chat-card-menu:not(.hidden)").forEach(m=>m.classList.add("hidden"));
-  const menu=document.querySelector(`[data-chat-menu="${CSS.escape(String(key))}"]`);
-  if(menu)menu.classList.toggle("hidden");
-}
-async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();const base={uid:me.uid,displayName:me.displayName||me.email?.split("@")[0]||"User",email:me.email||"",photoURL:me.photoURL||null,lastSeen:firebase.firestore.FieldValue.serverTimestamp(),online:true};if(!snap.exists)await ref.set(base);else await ref.set({lastSeen:base.lastSeen,online:true},{merge:true});profile={...base,...(snap.exists?snap.data():{})};
-   chatPrefs=normalizeChatPrefs(profile.chatPrefs||loadLocal("chatPrefs",{}));saveLocal("chatPrefs",chatPrefs);
+}async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();const base={uid:me.uid,displayName:me.displayName||me.email?.split("@")[0]||"User",email:me.email||"",photoURL:me.photoURL||null,lastSeen:firebase.firestore.FieldValue.serverTimestamp(),online:true};if(!snap.exists)await ref.set(base);else await ref.set({lastSeen:base.lastSeen,online:true},{merge:true});profile={...base,...(snap.exists?snap.data():{})};
   const googleName=me.displayName||profile.displayName||base.displayName;
   const googlePhoto=me.photoURL||profile.photoURL||null;
   const googleEmail=me.email||profile.email||"";
@@ -764,6 +669,7 @@ function stopListeners(){
   if(notificationUnsub){try{notificationUnsub()}catch(_){} notificationUnsub=null;}
   if(callInviteUnsub){try{callInviteUnsub()}catch(_){} callInviteUnsub=null;}
   if(callUnsub){try{callUnsub()}catch(_){} callUnsub=null;}
+  if(messageRootUnsub){try{messageRootUnsub()}catch(_){} messageRootUnsub=null;}
   closeChat();
 }
 function startListeners(){
@@ -855,26 +761,51 @@ function startListeners(){
     scheduleWarmFriendChatCaches();
   });
 
-  safeListen("messages",MESSAGES(),s=>{
-    const all=s.docs.map(d=>({id:d.id,...d.data()}));
-    const mine=all.filter(m=>m.senderUid===me.uid||m.receiverUid===me.uid||(Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(id=>String(id)===String(me.uid))));
-
-    // Keep a warm local message history if the first realtime snapshot is empty.
-    // A non-empty snapshot is authoritative and replaces the in-memory state.
-    if(mine.length>0 || messageMap.size===0){
-      messageMap=new Map(mine.map(m=>[m.id,m]));
-      messagesSyncReady=true;
+  // Dedicated RTDB child listeners keep the Home chat list truly realtime.
+  // They update only the affected message instead of waiting for a full-root
+  // snapshot/query cycle, so a newly arrived message immediately changes its
+  // preview, unread count and position on Home.
+  try{
+    const root=db.ref("messages");
+    const upsertMessage=snap=>{
+      const raw=snap.val();
+      if(!raw||!isRelevantMessageForMe(raw))return;
+      const m=normalizeLocalMessage({id:snap.key,...raw});
+      messageMap.set(m.id,m);
       cacheMessages();
-    }
+      renderChats();
+      if(activeFriend){
+        const belongs=activeFriend.isGroup
+          ?String(m.groupId||"")===String(activeFriend.uid||"")
+          :((String(m.senderUid)===String(me.uid)&&String(m.receiverUid)===String(activeFriend.uid))||(String(m.senderUid)===String(activeFriend.uid)&&String(m.receiverUid)===String(me.uid)));
+        if(belongs){activeMessageMap.set(m.id,m);renderMessages();hydrateRenderedMessageImages([m]).catch(()=>{});}
+      }
+    };
+    const removeMessage=snap=>{
+      const id=String(snap.key||"");
+      if(!id)return;
+      messageMap.delete(id);
+      activeMessageMap.delete(id);
+      cacheMessages();
+      renderChats();
+      if(activeFriend)renderMessages();
+    };
+    const onAdded=s=>upsertMessage(s),onChanged=s=>upsertMessage(s),onRemoved=s=>removeMessage(s);
+    root.on("child_added",onAdded,e=>console.warn("messages child_added",e));
+    root.on("child_changed",onChanged,e=>console.warn("messages child_changed",e));
+    root.on("child_removed",onRemoved,e=>console.warn("messages child_removed",e));
+    messageRootUnsub=()=>{root.off("child_added",onAdded);root.off("child_changed",onChanged);root.off("child_removed",onRemoved)};
+  }catch(e){
+    console.warn("message realtime listener setup",e);
+    // Fallback to the existing compatibility listener if direct RTDB listeners fail.
+    safeListen("messages",MESSAGES(),s=>{
+      const all=s.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()}));
+      const mine=all.filter(isRelevantMessageForMe);
+      if(mine.length||messageMap.size===0){messageMap=new Map(mine.map(m=>[m.id,m]));messagesSyncReady=true;cacheMessages()}
+      renderChats();updateStats();if(activeFriend)renderMessages();
+    });
+  }
 
-    const rooms=buildChatRoomCache();
-    if(rooms.length)saveLocal("chatRooms",rooms);
-
-    // Critical: every snapshot, including the first one, repaints the UI.
-    renderChats();
-    updateStats();
-    if(activeFriend)renderMessages();
-  });
 
   // Final synchronous paint after all listeners have been attached. This also
   // covers the case where Firebase callbacks are delayed by network startup.
@@ -1032,8 +963,8 @@ function ensureUnreadChatStyles(){
   style.id="fm-unread-chat-styles";
   style.textContent=`
     .chat-item.unread-chat{
-      background:rgba(91, 177, 255, .20) !important;
-      background-color:rgba(91, 177, 255, .20) !important;
+      background:rgba(93, 173, 255, .16) !important;
+      background-color:rgba(93, 173, 255, .16) !important;
       border-color:rgba(67, 153, 239, .28) !important;
     }
     .chat-item.unread-chat:hover{
@@ -1106,43 +1037,62 @@ async function markConversationRead(uid){
 }
 
 function renderChats(){
+  // Single source of truth for Home chat rendering.
+  // This function is intentionally safe to call from:
+  // 1) initial page load,
+  // 2) Firebase snapshots,
+  // 3) search input changes,
+  // 4) group creation / refresh.
   const box=$("chatList");
   if(!box)return;
   box.classList.remove("hidden");
-  if(!me)return;
-  const q=String($("chatSearch")?.value||"").trim().toLowerCase();
-  ensureUnreadChatStyles();
 
+  // Auth may not be restored yet. Do not destroy the existing/cached DOM.
+  if(!me)return;
+
+  const q=String($("chatSearch")?.value||"").trim().toLowerCase();
+
+  // Warm local state first so a hard refresh never depends on typing in search.
   const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
   const cachedFriendRooms=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
   const cachedGroupRooms=cachedRooms.filter(x=>x.kind==="group").map(x=>x.group).filter(Boolean);
+
+  // If Firebase has not populated an array yet, recover it from the persistent room cache.
   const roomFriends=friends.length?friends:cachedFriendRooms;
   const roomGroups=groups.length?groups:cachedGroupRooms;
 
-  const all=[...messageMap.values()].sort((a,b)=>chatSortTime(b)-chatSortTime(a));
+  const all=[...messageMap.values()].sort((a,b)=>messageTimeMs(b)-messageTimeMs(a));
+
   const by=new Map();
   for(const m of all){
     if(m.groupId)continue;
     const uid=String(m.senderUid)===String(me.uid)?m.receiverUid:m.senderUid;
-    if(uid&&!by.has(String(uid)))by.set(String(uid),m);
+    if(uid&&!by.has(uid))by.set(String(uid),m);
   }
+
+  // Friends are rooms even when there is no message yet.
   roomFriends.forEach(f=>{
     const uid=String(f?.friendUid||f?.uid||"");
     if(uid&&!by.has(uid))by.set(uid,null);
   });
 
-  const cachedFriendProfiles=new Map(cachedFriendRooms.map(f=>[
-    String(f?.friendUid||f?.uid||""),f
-  ]).filter(([uid])=>uid));
+  const cachedFriendProfiles=new Map(
+    cachedFriendRooms
+      .map(f=>[String(f?.friendUid||f?.uid||""),f])
+      .filter(([uid])=>uid)
+  );
 
   let rows=[...by.entries()].map(([uid,m])=>{
     const liveUser=users.find(x=>String(x.uid)===uid);
     const liveFriend=friends.find(x=>String(x.friendUid)===uid);
     const cachedProfile=cachedFriendProfiles.get(uid);
-    const latest=chatRoomLastMessage("friend",uid)||m;
-    return {uid,m:latest,u:{...(cachedProfile||{}),...(liveFriend||{}),...(liveUser||{}),uid}};
+    return {
+      uid,m,
+      u:{...(cachedProfile||{}),...(liveFriend||{}),...(liveUser||{}),uid}
+    };
   });
 
+  // Empty search MUST mean "show everything".
   if(q){
     rows=rows.filter(r=>
       String(r.u.displayName||"").toLowerCase().includes(q)||
@@ -1151,65 +1101,83 @@ function renderChats(){
     );
   }
 
-  const friendRows=rows.map(r=>{
-    const p=getChatPref("friend",r.uid);
-    const lastTime=chatSortTime(r.m);
-    const blocked=p.blocked;
-    if(!blocked&&p.deletedAt&&lastTime<=p.deletedAt)return null;
-    const unreadCount=blocked?0:getUnreadCount(r.uid);
+  const groupRows=roomGroups
+    .filter(g=>!q||String(g?.name||"").toLowerCase().includes(q))
+    .map(g=>{
+      const m=all
+        .filter(x=>String(x.groupId||"")===String(g.id||""))
+        .sort((a,b)=>messageTimeMs(b)-messageTimeMs(a))[0];
+
+      const preview=m?.type==="call"
+        ?((m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(m))
+        :m?.text||
+          ((m?.imageUrls||[]).length?"📷 ছবি":
+          m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
+
+      return `<button class="chat-item" data-chat-group="${esc(g.id)}" onclick="openGroupChat('${esc(g.id)}')">
+        <span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span>
+        <span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${esc(preview)}</small></span>
+        <time class="item-meta">${m?time(m.createdAt):"Group"}</time>
+      </button>`;
+    }).join("");
+
+  const personal=rows.map(r=>{
+    const preview=r.m?.type==="call"
+      ?((r.m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(r.m))
+      :r.m?.text||
+        ((r.m?.imageUrls||[]).length?"📷 Image":
+        r.m?.fileName?"📎 "+r.m.fileName:"Start a conversation");
+
+    const unreadCount=getUnreadCount(r.uid);
     const unreadClass=unreadCount>0?" unread-chat":"";
     const badge=unreadCount>0
-      ?`<span class="unread-badge" aria-label="${unreadCount} unread messages">${unreadCount>99?"99+":unreadCount}</span>`:"";
-    const preview=blocked?"🚫 ইউজার ব্লক করা আছে":
-      r.m?.type==="call"?((r.m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(r.m)):
-      r.m?.text||((r.m?.imageUrls||[]).length?"📷 Image":r.m?.fileName?"📎 "+r.m.fileName:"Start a conversation");
+      ?`<span class="unread-badge" aria-label="${unreadCount} unread messages">${unreadCount>99?"99+":unreadCount}</span>`
+      :"";
 
-    return {
-      kind:"friend",id:r.uid,pinned:p.pinned,blocked,
-      time:lastTime,
-      html:`<div class="chat-item${unreadClass}${p.pinned?" pinned-chat":""}${blocked?" blocked-chat":""}" data-chat-card="${esc(r.uid)}">
-        <button type="button" class="chat-main" onclick="${blocked?`toggleChatCardMenu('${esc(r.uid)}',event)`:`openChat('${esc(r.uid)}')`}">
-          <img class="avatar" src="${esc(avatar(r.u))}" alt="">
-          <span class="item-copy"><strong>${esc(r.u.displayName||r.u.email||"User")}${p.pinned?` <i class="fa-solid fa-thumbtack pinned-icon" title="Pinned"></i>`:""}</strong><small>${esc(preview)}</small></span>
-          ${badge}<time class="item-meta">${r.m?time(r.m.createdAt):"Friend"}</time>
-        </button>
-        <button type="button" class="chat-more-btn" title="Chat options" aria-label="Chat options" onclick="toggleChatCardMenu('${esc(r.uid)}',event)"><i class="fa-solid fa-ellipsis-vertical"></i></button>
-        ${chatActionMenu("friend",r.uid)}
-      </div>`
-    };
-  }).filter(Boolean);
+    return `<button class="chat-item${unreadClass}" data-chat-uid="${esc(r.uid)}" onclick="openChat('${esc(r.uid)}')">
+      <img class="avatar" src="${esc(avatar(r.u))}" alt="">
+      <span class="item-copy"><strong>${esc(r.u.displayName||r.u.email||"User")}</strong><small>${esc(preview)}</small></span>
+      ${badge}<time class="item-meta">${r.m?time(r.m.createdAt):"Friend"}</time>
+    </button>`;
+  }).join("");
 
-  const groupRows=roomGroups.map(g=>{
-    const p=getChatPref("group",g.id);
-    const m=chatRoomLastMessage("group",g.id);
-    const lastTime=chatSortTime(m);
-    if(p.deletedAt&&lastTime<=p.deletedAt)return null;
-    if(q&&!String(g?.name||"").toLowerCase().includes(q))return null;
-    const preview=m?.type==="call"?((m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(m)):
-      m?.text||((m?.imageUrls||[]).length?"📷 ছবি":m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
-    return {
-      kind:"group",id:g.id,pinned:p.pinned,time:lastTime,
-      html:`<div class="chat-item${p.pinned?" pinned-chat":""}" data-chat-card="group:${esc(g.id)}">
-        <button type="button" class="chat-main" onclick="openGroupChat('${esc(g.id)}')">
-          <span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span>
-          <span class="item-copy"><strong>${esc(g.name||"Unnamed group")}${p.pinned?` <i class="fa-solid fa-thumbtack pinned-icon"></i>`:""}</strong><small>${esc(preview)}</small></span>
-          <time class="item-meta">${m?time(m.createdAt):"Group"}</time>
-        </button>
-        <button type="button" class="chat-more-btn" title="Group options" aria-label="Group options" onclick="toggleChatCardMenu('group:${esc(g.id)}',event)"><i class="fa-solid fa-ellipsis-vertical"></i></button>
-        ${chatActionMenu("group",g.id)}
-      </div>`
-    };
-  }).filter(Boolean);
+  // Mix groups and personal chats into one list and sort by the actual latest
+  // message transaction. A pinned room (when present in cached room metadata)
+  // remains above normal rooms without disturbing realtime ordering.
+  const personalRows=rows.map(r=>({kind:"friend",uid:r.uid,m:r.m,u:r.u}));
+  const groupData=roomGroups.map(g=>{
+    const m=all.find(x=>String(x.groupId||"")===String(g.id||""))||null;
+    return {kind:"group",group:g,m};
+  }).filter(x=>!q||String(x.group?.name||"").toLowerCase().includes(q));
+  const sortRows=(a,b)=>{
+    const ap=!!(a.u?.pinned||a.friend?.pinned||a.group?.pinned||a.m?.pinned);
+    const bp=!!(b.u?.pinned||b.friend?.pinned||b.group?.pinned||b.m?.pinned);
+    if(ap!==bp)return bp-ap;
+    return messageTimeMs(b.m)-messageTimeMs(a.m);
+  };
+  const mixed=[...personalRows,...groupData].sort(sortRows);
+  const personalHtmlByUid=new Map(personalRows.map(r=>[String(r.uid),r]));
+  const groupHtmlById=new Map(groupRows.match(/data-chat-group="([^"]+)"/g)?.map(x=>[x.match(/"([^"]+)"/)[1],x])||[]);
+  const markup=mixed.map(r=>{
+    if(r.kind==="friend"){
+      const rr=personalHtmlByUid.get(String(r.uid));
+      const preview=rr.m?.type==="call"?((rr.m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(rr.m)):(rr.m?.text||((rr.m?.imageUrls||[]).length?"📷 Image":rr.m?.fileName?"📎 "+rr.m.fileName:"Start a conversation"));
+      const unreadCount=getUnreadCount(rr.uid),unreadClass=unreadCount>0?" unread-chat":"",badge=unreadCount>0?`<span class="unread-badge" aria-label="${unreadCount} unread messages">${unreadCount>99?"99+":unreadCount}</span>`:"";
+      return `<button class="chat-item${unreadClass}" data-chat-uid="${esc(rr.uid)}" onclick="openChat('${esc(rr.uid)}')"><img class="avatar" src="${esc(avatar(rr.u))}" alt=""><span class="item-copy"><strong>${esc(rr.u.displayName||rr.u.email||"User")}</strong><small>${esc(preview)}</small></span>${badge}<time class="item-meta">${rr.m?time(rr.m.createdAt):"Friend"}</time></button>`;
+    }
+    const g=r.group,m=r.m,preview=m?.type==="call"?((m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(m)):m?.text||((m?.imageUrls||[]).length?"📷 ছবি":m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
+    return `<button class="chat-item" data-chat-group="${esc(g.id)}" onclick="openGroupChat('${esc(g.id)}')"><span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${esc(preview)}</small></span><time class="item-meta">${m?time(m.createdAt):"Group"}</time></button>`;
+  }).join("");
+  box.innerHTML=markup||`<div class="empty"><i class="fa-regular fa-comments" style="font-size:28px;display:block;margin-bottom:10px"></i>কোনো conversation নেই। People থেকে একজনকে বেছে নিয়ে chat শুরু করুন।</div>`;
 
-  const rooms=[...groupRows,...friendRows].sort((a,b)=>{
-    if(a.pinned!==b.pinned)return a.pinned?-1:1;
-    return (b.time||0)-(a.time||0);
-  });
-  box.innerHTML=rooms.map(r=>r.html).join("")||`<div class="empty"><i class="fa-regular fa-comments" style="font-size:28px;display:block;margin-bottom:10px"></i>কোনো conversation নেই। People থেকে একজনকে বেছে নিয়ে chat শুরু করুন।</div>`;
-
-  const snapshot=normalizeChatRooms([...cachedRooms,...buildChatRoomCache()]);
+  // Persist the same room set used by the renderer, including groups with no messages.
+  const snapshot=normalizeChatRooms([
+    ...cachedRooms,
+    ...buildChatRoomCache()
+  ]);
   if(snapshot.length)saveLocal("chatRooms",snapshot);
 }
+
 function renderGroups(){const box=$("groupList");if(!box)return;const q=($("groupSearch")?.value||"").trim().toLowerCase();const rows=groups.filter(g=>!q||(g.name||"").toLowerCase().includes(q));box.innerHTML=rows.length?rows.map(g=>{const ms=groupMemberUsers(g).slice(0,4);return`<button class="chat-item" onclick="openGroupChat('${esc(g.id)}')"><span class="group-avatar-mini">${ms.map(u=>`<img src="${esc(avatar(u))}" alt="">`).join("")}</span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${(g.memberUids||[]).length} জন সদস্য · ${esc((g.memberUids||[]).includes(me.uid)?"আপনি সদস্য":"")}</small></span><span class="item-meta"><i class="fa-solid fa-chevron-right"></i></span></button>`}).join(""):`<div class="empty"><i class="fa-solid fa-user-group" style="font-size:28px;display:block;margin-bottom:10px"></i>এখনও কোনো গ্রুপ নেই।<br>নতুন গ্রুপ তৈরি করে আপনার বন্ধুদের যোগ করুন।</div>`}
 function renderGroupPicker(){const box=$("groupFriendPicker"),count=$("groupMemberCount");if(!box)return;const fs=friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User",email:""});if(!fs.length){box.innerHTML='<div class="empty" style="padding:25px 10px;background:transparent;border:0">আগে অন্তত একজন বন্ধুকে Add করুন, তারপর গ্রুপ তৈরি করতে পারবেন।</div>';$("saveGroupBtn").disabled=true;return}box.innerHTML=fs.map(u=>`<label class="group-friend-row"><input type="checkbox" value="${esc(u.uid)}"><img src="${esc(avatar(u))}" alt=""><span class="item-copy"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></span></label>`).join("");const update=()=>{const n=box.querySelectorAll("input:checked").length;count.textContent=`${n} জন নির্বাচিত`;$("saveGroupBtn").disabled=n<1};box.querySelectorAll("input").forEach(x=>x.onchange=update);update()}
 function showGroupModal(){if(!me)return;$("groupNameInput").value="";$("groupModal").classList.remove("hidden");renderGroupPicker();setTimeout(()=>$("groupNameInput").focus(),50)}
@@ -1456,7 +1424,7 @@ async function deleteMessage(id){
 }
 function renderMessages(){
   if(!activeFriend)return;
-  const arr=[...activeMessageMap.values()].sort((x,y)=>(x.createdAt?.toMillis?.()||Number(x.createdAt)||0)-(y.createdAt?.toMillis?.()||Number(y.createdAt)||0));
+  const arr=[...activeMessageMap.values()].sort((x,y)=>messageTimeMs(x)-messageTimeMs(y));
   const box=$("messages");
   const escUrl=u=>esc(u||"");
   const oldHeight=box.scrollHeight,oldTop=box.scrollTop;
@@ -1524,9 +1492,11 @@ async function openChat(uid){
   try{await idbOpen()}catch(e){console.warn("local message store unavailable",e)}
   activeFriend=u;
   historyPage=1;historyNoMore=false;historyPrefetchBusy=false;oldestLoadedCreatedAt=0;
-  // Offline-first: paint the most recent locally cached messages immediately.
+  // Offline-first: paint the most recent locally cached messages first.
+  // Awaiting this prevents the async local render from racing with the realtime
+  // subscription and jumping the viewport from the top toward the bottom.
   const localConversationId=pair(me.uid,uid);
-  renderLocalMessages(localConversationId,FM_WARM_MESSAGE_LIMIT).catch(()=>renderMessages());
+  try{await renderLocalMessages(localConversationId,FM_WARM_MESSAGE_LIMIT)}catch(_){renderMessages()}
   setChatHeader(u);
   syncChatRoomTheme();
   if(!routeSyncing)pushAppRoute("chat/"+encodeURIComponent(uid));
@@ -1535,6 +1505,10 @@ async function openChat(uid){
   subscribeChat(uid);
   watchTyping();
   renderMessages();
+  // Entering a chat always starts at the newest message immediately — no smooth
+  // top-to-bottom animation and no delayed jump after the realtime snapshot.
+  const jumpToLatest=()=>{const box=$("messages");if(box){box.style.scrollBehavior="auto";box.scrollTop=box.scrollHeight;requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight})}};
+  jumpToLatest();
   // Opening a personal conversation is the explicit read action.
   if(!activeFriend.isGroup)await markConversationRead(uid);
 }
@@ -1545,8 +1519,9 @@ async function openGroupChat(groupId){
   await idbOpen();activeFriend={...g,uid:g.id,isGroup:true};
   historyPage=1;historyNoMore=false;historyPrefetchBusy=false;oldestLoadedCreatedAt=0;
   // Group cache uses a dedicated conversation key so it survives refresh.
-  renderLocalMessages(`group:${groupId}`,FM_WARM_MESSAGE_LIMIT).catch(()=>renderMessages());
-  setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();await renderMessages()
+  try{await renderLocalMessages(`group:${groupId}`,FM_WARM_MESSAGE_LIMIT)}catch(_){renderMessages()}
+  setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();renderMessages();
+  const jumpToLatest=()=>{const box=$("messages");if(box){box.style.scrollBehavior="auto";box.scrollTop=box.scrollHeight;requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight})}};jumpToLatest()
 }
 function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];replyTarget=null;renderUploadQueue();renderReplyPreview();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
 function watchTyping(){if(typingUnsub)typingUnsub();if(!activeFriend||activeFriend.isGroup){$("typing").classList.add("hidden");return}typingUnsub=USERS().doc(activeFriend.uid).onSnapshot(s=>{$("typing").classList.toggle("hidden",(s.data()||{}).typingTo!==me.uid)})}
@@ -2465,11 +2440,10 @@ $("logoutBtn").onclick=async()=>{
     stopListeners();
     try{await auth.signOut();}catch(e){console.error("signOut",e);toast("Logout করা যায়নি");return;}
     localStorage.removeItem("fm_session_uid");
-    me=null;profile=null;chatPrefs={};friends=[];requests=[];sentRequests=[];users=[];groups=[];messageMap.clear();
+    me=null;profile=null;friends=[];requests=[];sentRequests=[];users=[];groups=[];messageMap.clear();
   }
 };
 document.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>$(b.dataset.close).classList.add("hidden"));
-document.addEventListener("click",e=>{if(!e.target.closest(".chat-card-menu")&&!e.target.closest(".chat-more-btn"))document.querySelectorAll(".chat-card-menu:not(.hidden)").forEach(m=>m.classList.add("hidden"));});
 $("chatInfo").onclick=()=>{if(!activeFriend)return;if(activeFriend.isGroup){toast(`${activeFriend.name||"Group"} · ${(activeFriend.memberUids||[]).length} জন সদস্য`);return}openUser(activeFriend.uid)};
 $("closeLightbox").onclick=()=>{$("lightbox").classList.add("hidden");$("lightboxImg").src=""};
 
@@ -2583,7 +2557,7 @@ document.addEventListener("DOMContentLoaded",async()=>{
 /* Smooth historical message loading: preserve scroll anchoring and avoid image layout shifts. */
 (function installHistoryUX(){
   const style=document.createElement("style");style.id="fm-history-ux";style.textContent=`
-    #messages{overflow-anchor:auto;overscroll-behavior-y:contain;}
+    #messages{overflow-anchor:none;overscroll-behavior-y:contain;scroll-behavior:auto!important;}
     #messages .msg-img{contain:layout paint;min-height:24px;}
     #messages .fm-prefetched-image{filter:blur(16px);transform:translateZ(0);cursor:pointer;transition:filter .18s ease;}
     #messages .fm-prefetched-image:hover{filter:blur(12px);}
