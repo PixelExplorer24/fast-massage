@@ -401,3 +401,77 @@ body.dark .chat-panel .messages{background:var(--bg)}
 @media(max-width:700px){
   .fm-panzoom-wrap img{max-width:96vw;max-height:88vh;}
 }
+
+/* ===== Home chat cards: pin / delete / block controls ===== */
+.chat-item{
+  position:relative;
+  overflow:visible;
+  padding:0 !important;
+  min-height:74px;
+}
+.chat-main{
+  width:100%;
+  min-width:0;
+  min-height:74px;
+  padding:12px 44px 12px 12px;
+  display:flex;
+  align-items:center;
+  gap:12px;
+  background:transparent;
+  color:inherit;
+  text-align:left;
+  border-radius:17px;
+}
+.chat-main:hover{background:transparent}
+.chat-item.unread-chat .chat-main{background:transparent}
+.chat-item.pinned-chat{border-color:rgba(37,99,235,.35)}
+.chat-item.blocked-chat{opacity:.82}
+.pinned-icon{font-size:9px;color:#2563eb;margin-left:4px}
+.chat-more-btn{
+  position:absolute;
+  top:50%;
+  right:8px;
+  transform:translateY(-50%);
+  width:32px;
+  height:32px;
+  border-radius:10px;
+  background:#eef2f7;
+  color:#64748b;
+  display:grid;
+  place-items:center;
+  z-index:3;
+}
+.chat-more-btn:hover{background:#e2e8f0;color:#0f172a}
+.chat-card-menu{
+  position:absolute;
+  top:48px;
+  right:8px;
+  z-index:20;
+  width:170px;
+  padding:6px;
+  background:#fff;
+  border:1px solid var(--line);
+  border-radius:13px;
+  box-shadow:0 16px 45px rgba(15,23,42,.16);
+}
+.chat-card-menu button{
+  width:100%;
+  display:flex;
+  align-items:center;
+  gap:9px;
+  padding:10px 9px;
+  border-radius:9px;
+  background:#fff;
+  color:#334155;
+  text-align:left;
+  font-size:11px;
+  font-weight:700;
+}
+.chat-card-menu button:hover{background:#f8fafc}
+.chat-card-menu button i{width:16px;text-align:center}
+.chat-card-menu .menu-delete{color:#dc2626}
+.chat-card-menu .menu-block{color:#b45309}
+@media(max-width:700px){
+  .chat-card-menu{top:46px;right:7px;width:178px}
+  .chat-more-btn{width:34px;height:34px}
+}
