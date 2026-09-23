@@ -1839,8 +1839,54 @@ async function prefetchNextHistoryPages(){
 let fmImageZoom=1;
 let fmViewerSourceUrl='';
 let fmViewerPanzoom=null;
-let fmViewerPanzoomReady=false;
 let fmViewerLastTap=0;
+
+function destroyViewerPanzoom(){
+  try{fmViewerPanzoom?.destroy?.()}catch(_){ }
+  fmViewerPanzoom=null;
+}
+
+function createViewerPanzoom(){
+  const stage=$('fmImageStage'), wrap=$('fmPanzoomWrap');
+  if(!stage||!wrap||!window.Panzoom)return;
+  destroyViewerPanzoom();
+  fmViewerPanzoom=window.Panzoom(wrap,{
+    maxScale:5,
+    minScale:1,
+    step:.22,
+    contain:'inside',
+    cursor:'grab',
+    startScale:1,
+    panOnlyWhenZoomed:true,
+    animate:true,
+    duration:190,
+    easing:'ease-out',
+    canvas:true,
+    handleStartEvent:'pointerdown',
+    excludeClass:'panzoom-exclude'
+  });
+  wrap.classList.remove('is-dragging');
+  wrap.addEventListener('panzoomstart',()=>wrap.classList.add('is-dragging'));
+  wrap.addEventListener('panzoomend',()=>wrap.classList.remove('is-dragging'));
+
+  // Wheel zoom is deliberately centered. Do not pass a focal point here:
+  // Panzoom's focal coordinates are relative to its parent and passing stage
+  // coordinates can introduce a vertical jump when the stage has toolbars or
+  // safe-area offsets.
+  stage.onwheel=e=>{
+    if($('fmImageViewer')?.classList.contains('hidden') || !fmViewerPanzoom)return;
+    e.preventDefault();e.stopPropagation();
+    const current=fmViewerPanzoom.getScale?.()||1;
+    const factor=Math.exp(-e.deltaY*0.00115);
+    const next=Math.max(1,Math.min(5,current*factor));
+    try{fmViewerPanzoom.zoom(next,{animate:true,duration:170})}catch(_){ }
+  };
+
+  stage.ondblclick=e=>{
+    e.preventDefault();e.stopPropagation();
+    try{fmViewerPanzoom.reset({animate:true,duration:240})}catch(_){ }
+  };
+}
 
 function ensureImageViewer(){
   if($('fmImageViewer'))return;
@@ -1864,113 +1910,46 @@ function ensureImageViewer(){
       </div>
     </div>`;
   document.body.appendChild(el);
-
-  const stage=$('fmImageStage');
-  const wrap=$('fmPanzoomWrap');
   const img=$('fmViewerImage');
   const closeViewer=()=>closeImageViewer();
   $('fmImageViewerClose')?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();closeViewer();});
   el.querySelector('.fm-image-viewer-backdrop')?.addEventListener('click',closeViewer);
   el.addEventListener('keydown',e=>{if(e.key==='Escape')closeViewer();});
   el.tabIndex=-1;
-
-  const initPanzoom=()=>{
-    if(fmViewerPanzoomReady || !window.Panzoom || !wrap)return;
-    fmViewerPanzoom=window.Panzoom(wrap,{
-      maxScale:5,
-      minScale:1,
-      step:.25,
-      contain:'inside',
-      cursor:'grab',
-      startScale:1,
-      disablePan:false,
-      panOnlyWhenZoomed:true,
-      animate:true,
-      duration:260,
-      easing:'ease-out',
-      canvas:true,
-      step:.18,
-      handleStartEvent:'pointerdown',
-      excludeClass:'panzoom-exclude'
-    });
-    fmViewerPanzoomReady=true;
-    wrap.classList.remove('is-dragging');
-    wrap.addEventListener('panzoomstart',()=>wrap.classList.add('is-dragging'));
-    wrap.addEventListener('panzoomend',()=>wrap.classList.remove('is-dragging'));
-    stage.addEventListener('wheel',e=>{
-      if($('fmImageViewer')?.classList.contains('hidden') || !fmViewerPanzoom)return;
-      e.preventDefault();e.stopPropagation();
-      // Use the viewer centre as the wheel-zoom focal point. This avoids the
-      // common 'zoom jumps to the left/right' feeling caused by cursor-based zoom.
-      try{
-        const current=fmViewerPanzoom.getScale?.()||1;
-        const factor=Math.exp(-e.deltaY*0.0012);
-        const next=Math.max(1,Math.min(5,current*factor));
-        const rect=stage.getBoundingClientRect();
-        fmViewerPanzoom.zoom(next,{animate:true,duration:220,focal:{x:rect.width/2,y:rect.height/2}});
-      }catch(_){
-        fmViewerPanzoom.zoomWithWheel?.(e);
-      }
-    },{passive:false});
-    stage.addEventListener('dblclick',e=>{
-      e.preventDefault();e.stopPropagation();
-      if(!fmViewerPanzoom)return;
-      try{fmViewerPanzoom.reset({animate:true,duration:280})}catch(_){try{fmViewerPanzoom.reset()}catch(__){}}
-    });
-    // Keep the zoom origin in the visual center. This prevents the image from
-    // drifting to the left when pinch/wheel zoom starts from an off-center point.
-    stage.addEventListener('pointerdown',()=>{
-      wrap.style.transformOrigin='50% 50%';
-    },{passive:true});
-    window.addEventListener('resize',()=>{
-      if($('fmImageViewer')?.classList.contains('hidden'))return;
-      try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){}
-    });
-  };
   img.addEventListener('load',()=>{
+    if(!$('fmImageViewer')||$('fmImageViewer').classList.contains('hidden'))return;
     requestAnimationFrame(()=>{
-      initPanzoom();
-      try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
+      createViewerPanzoom();
+      try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){ }
     });
   });
-  initPanzoom();
 }
 
 function showImage(url){
   if(!url)return;
   ensureImageViewer();
   fmViewerSourceUrl=url;
-  const viewer=$('fmImageViewer'),img=$('fmViewerImage');
-  // The viewer always uses its own image element. Never modify, move, resize,
-  // or reuse the original image element inside the chat message.
+  const viewer=$('fmImageViewer'), img=$('fmViewerImage');
   const source=fmImageObjectUrls.get(url)||url;
-  // Reset before/after changing the source so Panzoom never carries a previous
-  // image's translation into the next image. The actual reset after load is
-  // essential because image dimensions can differ dramatically.
-  try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
+  destroyViewerPanzoom();
   img.removeAttribute('style');
-  img.src=source;
+  img.src='';
   img.dataset.sourceUrl=url;
   viewer.classList.remove('hidden');
   document.body.classList.add('fm-viewer-open');
   viewer.focus({preventScroll:true});
-  const centerAfterLoad=()=>requestAnimationFrame(()=>{
-    try{
-      fmViewerPanzoom?.reset?.({animate:false});
-      wrap.style.transformOrigin='50% 50%';
-    }catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
-  });
-  if(img.complete) centerAfterLoad();
-  else img.addEventListener('load',centerAfterLoad,{once:true});
+  // Set the source only after the viewer is visible. Panzoom is created from
+  // the loaded image dimensions, so every image gets its own correct bounds.
+  requestAnimationFrame(()=>{img.src=source;});
 }
 
-// Compatibility API used by profile pictures.
 function viewImg(url){showImage(url)}
 function downloadViewerImage(){if(fmViewerSourceUrl)downloadOriginalImage(fmViewerSourceUrl)}
 function closeImageViewer(){
   const el=$('fmImageViewer');if(!el)return;
   el.classList.add('hidden');
-  try{fmViewerPanzoom?.reset?.({animate:false})}catch(_){try{fmViewerPanzoom?.reset?.()}catch(__){}}
+  destroyViewerPanzoom();
+  const img=$('fmViewerImage');if(img)img.src='';
   fmViewerSourceUrl='';
   document.body.classList.remove('fm-viewer-open');
 }
@@ -2414,7 +2393,7 @@ initPreferences();
 initMessageReactions();
 
 // Profile pictures open in the same full-screen lightbox.
-["profileAvatar","userModalAvatar"].forEach(id=>{
+["profileAvatar","userModalAvatar","chatAvatar","headerAvatar"].forEach(id=>{
   const el=$(id);
   if(el){
     el.style.cursor="zoom-in";
