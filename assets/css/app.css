@@ -336,7 +336,8 @@ body.dark .chat-panel .messages{background:var(--bg)}
 
 .remote-video.pinned{grid-column:1/-1;min-height:58vh;z-index:3}.remote-video.pinned .remote-label-wrap{font-size:14px}
 
-.msg-footer{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:3px}.msg-footer .msg-time{margin-top:0}.msg-delete-btn{border:0;background:transparent;color:inherit;opacity:.55;width:22px;height:20px;padding:0;cursor:pointer;border-radius:6px;font-size:9px}.msg-delete-btn:hover{opacity:1;background:#00000012}.mine .msg-delete-btn:hover{background:#ffffff22}.msg-delete-btn:focus-visible{outline:2px solid currentColor;outline-offset:1px}
+.msg-footer{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:3px}.msg-footer .msg-time{margin-top:0}.msg-reaction-quick{border:0;background:transparent;color:inherit;opacity:.62;width:22px;height:20px;padding:0;cursor:pointer;border-radius:6px;font-size:10px}.msg-reaction-quick:hover{opacity:1;background:#00000012}.mine .msg-reaction-quick:hover{background:#ffffff22}.msg-reaction-quick.active{color:#ef4444;opacity:1}.mine .msg-reaction-quick.active{color:#fff}
+.msg-delete-btn{border:0;background:transparent;color:inherit;opacity:.55;width:22px;height:20px;padding:0;cursor:pointer;border-radius:6px;font-size:9px}.msg-delete-btn:hover{opacity:1;background:#00000012}.mine .msg-delete-btn:hover{background:#ffffff22}.msg-delete-btn:focus-visible{outline:2px solid currentColor;outline-offset:1px}
 
 /* ===== Message reactions ===== */
 .bubble{position:relative;}
