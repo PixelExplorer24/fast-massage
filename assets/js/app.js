@@ -1744,6 +1744,7 @@ function renderUploadQueue(){
       ?`<img src="${URL.createObjectURL(x.f)}" style="width:34px;height:34px;border-radius:7px;object-fit:cover">`
       :`<i class="fa-solid fa-file-arrow-up"></i>`}</span>
     <span class="queue-copy"><b>${esc(x.f.name)}</b><small>${bytes(x.f.size)}</small><span class="progress"><i></i></span></span>
+    <button type="button" class="queue-remove" data-queue-type="${x.type}" data-queue-index="${x.i}" title="Remove" aria-label="Remove ${esc(x.f.name)}"><i class="fa-solid fa-xmark"></i></button>
   </div>`).join("");
 }
 async function sendMessage(e){
@@ -2627,6 +2628,18 @@ if(sendButton&&composerInput){
 composerInput?.addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,120)+"px";handleTyping()});
 $("pickImage").onclick=()=>$("imageInput").click();
 $("pickFile").onclick=()=>$("fileInput").click();
+$("uploadQueue")?.addEventListener("click",e=>{
+  const btn=e.target.closest(".queue-remove");
+  if(!btn)return;
+  e.preventDefault();
+  e.stopPropagation();
+  const type=btn.dataset.queueType;
+  const index=Number(btn.dataset.queueIndex);
+  if(!Number.isInteger(index)||index<0)return;
+  if(type==="image")attachedImages.splice(index,1);
+  else if(type==="file")attachedFiles.splice(index,1);
+  renderUploadQueue();
+});
 $("imageInput").onchange=e=>{
   const incoming=Array.from(e.target.files||[]).filter(f=>f.type.startsWith("image/"));
   attachedImages=[...attachedImages,...incoming].slice(0,10);
