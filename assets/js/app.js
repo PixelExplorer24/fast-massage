@@ -120,7 +120,7 @@ let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=
 // Dedicated child-event registries keep People/Friends/Requests realtime even when the full collection is large or a value snapshot is delayed.
 let liveUserMap=new Map(),liveFriendMap=new Map(),liveRequestMap=new Map();
 let directoryUnsubs=[];
-const CACHE_PREFIX="fm_cache_v13_";
+const CACHE_PREFIX="fm_cache_v14_";
 const PERSISTENT_FRIENDS_PREFIX="fm_friend_registry_v1_";
 const PERSISTENT_ROOMS_PREFIX="fm_chat_rooms_registry_v1_";
 let friendsSyncReady=false,groupsSyncReady=false,messagesSyncReady=false;
@@ -537,7 +537,7 @@ function canonicalMessageTime(v){
   if(v&&typeof v==="object"&&v.__rtdbTimestamp!=null)return Number(v.__rtdbTimestamp)||0;
   const n=Number(v);return Number.isFinite(n)?n:0;
 }
-function messageTimeValue(m){return canonicalMessageTime(m?.createdAt)||Number(m?.createdAtMs)||Number(m?.timestamp)||0;}
+function messageTimeValue(m){return Number(m?.createdAtMs)||canonicalMessageTime(m?.createdAt)||Number(m?.timestamp)||0;}
 const time=v=>{const n=canonicalMessageTime(v);if(!n)return"now";let d=new Date(n);return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});};
 function messageDayKey(v){const n=canonicalMessageTime(v);if(!n)return"unknown";const d=new Date(n);return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;}
 function messageDayLabel(v){const n=v?.toMillis?v.toMillis():Number(v||0);if(!n)return"Unknown date";const d=new Date(n),now=new Date();
@@ -841,7 +841,9 @@ function startListeners(){
     const upsertMessage=snap=>{
       const raw=snap.val();
       if(!raw||!isRelevantMessageForMe(raw))return;
+      const previous=messageMap.get(String(snap.key||""));
       const m=normalizeLocalMessage({id:snap.key,...raw});
+      if(previous?.createdAtMs)m.createdAtMs=Number(previous.createdAtMs);
       messageMap.set(m.id,m);
       cacheMessages();
       renderChats();
@@ -1443,7 +1445,6 @@ function setChatHeader(u){
 
 window.openUser=uid=>{const u=users.find(x=>x.uid===uid)||friends.find(x=>x.friendUid===uid);if(!u)return;$("userModalAvatar").src=avatar(u);$("userModalName").textContent=u.displayName||"User";$("userModalEmail").textContent=u.email||"";$("userModalBio").textContent=u.bio||"No bio added.";$("userModalChat").onclick=()=>{closeAllModals();openChat(uid)};$("userModal").classList.remove("hidden")};
 
-function subscribeChat(uid){chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];const ref=MESSAGES();if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(renderMessages));}else{chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(renderMessages));chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(renderMessages));}}
 let replyTarget=null;
 function replyPreviewText(m){
   if(m?.text) return String(m.text).replace(/\s+/g," ").trim().slice(0,140);
@@ -1508,9 +1509,9 @@ async function setMessageReaction(messageId,emoji){
   if(reactions[me.uid]===emoji)delete reactions[me.uid];else reactions[me.uid]=emoji;
   try{
     await MESSAGES().doc(messageId).update({reactions});
-    const persistedTime=canonicalMessageTime(m.createdAt)||Number(m.createdAtMs)||0;
+    const persistedTime=Number(m.createdAtMs)||canonicalMessageTime(m.createdAt)||Number(m.timestamp)||0;
     m.reactions=reactions;
-    if(persistedTime&&!canonicalMessageTime(m.createdAt))m.createdAtMs=persistedTime;
+    if(persistedTime)m.createdAtMs=persistedTime;
     activeMessageMap.set(messageId,m);messageMap.set(messageId,m);cacheMessages();renderMessages();renderChats();updateChatUnreadBadge();
   }catch(e){console.error("setMessageReaction",e);toast(e?.code==="permission-denied"?"Reaction দেওয়ার permission নেই":"Reaction দেওয়া যায়নি")}
 }
@@ -1574,65 +1575,68 @@ async function deleteMessage(id){
 }
 function renderMessages(){
   if(!activeFriend)return;
-  const arr=[...activeMessageMap.values()].sort((x,y)=>{const dt=messageTimeMs(x)-messageTimeMs(y);return dt||String(x.id||"").localeCompare(String(y.id||""));});
   const box=$("messages");
-  const escUrl=u=>esc(u||"");
-  const oldHeight=box.scrollHeight,oldTop=box.scrollTop;
-  const wasAtBottom=(oldHeight-box.clientHeight-oldTop)<72 || oldHeight===0;
+  if(!box)return;
+  const arr=[...activeMessageMap.values()]
+    .map(normalizeLocalMessage)
+    .sort((x,y)=>{
+      const dt=messageTimeValue(x)-messageTimeValue(y);
+      return dt||String(x.id||"").localeCompare(String(y.id||""));
+    });
+  const oldHeight=box.scrollHeight,oldTop=box.scrollTop,oldClient=box.clientHeight;
+  const wasAtBottom=(oldHeight-oldClient-oldTop)<80 || oldHeight===0;
+  const boxRect=box.getBoundingClientRect();
+  const anchor=!wasAtBottom
+    ? [...box.querySelectorAll('.msg-row[data-message-id]')]
+      .map(row=>({id:row.dataset.messageId,top:row.getBoundingClientRect().top}))
+      .find(x=>x.top>=boxRect.top-5)
+    : null;
   let previousDay="";
   box.innerHTML=arr.length?arr.map(m=>{
     const day=messageDayKey(messageTimeValue(m));
-    const separator=day!==previousDay?(previousDay="",messageDateSeparator(messageTimeValue(m))):("");
+    const separator=day!==previousDay?messageDateSeparator(messageTimeValue(m)):"";
     previousDay=day;
-    if(m.type==="call")return `${separator}<div class="msg-row ${m.senderUid===me.uid?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(messageTimeValue(m))}</div></div></div>`;
-    const mine=m.senderUid===me.uid,imgs=m.imageUrls||[];
-    const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
-    const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
-    const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
-    return`<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">${reactionBarHTML(m)}
-      ${activeFriend.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(users.find(u=>u.uid===m.senderUid)?.displayName||"Member")}</div>`:""}
-      ${replyQuoteHTML(m)}
-      ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
-      ${imgs.map(u=>`<div class="media-bubble ${m.localPending?"media-pending":""}"><img class="msg-img" data-image-url="${escUrl(u)}" src="${escUrl(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="event.stopPropagation();showImage('${escUrl(u)}')"><div class="media-overlay-actions"><button type="button" title="Zoom" onclick="event.stopPropagation();showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button><button type="button" title="Download" onclick="event.stopPropagation();downloadOriginalImage('${escUrl(u)}')"><i class="fa-solid fa-download"></i></button></div>${m.localPending?`<span class="media-uploading"><i class="fa-solid fa-spinner fa-spin"></i> Uploading…</span>`:""}</div>`).join("")}
-      ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-download file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"File")}</b><small>${esc(f.size?bytes(f.size):"File")} • Uploading…</small></span><i class="fa-solid fa-spinner fa-spin file-download"></i></div>`).join("")}
-      ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(messageTimeValue(m))}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button><button class="msg-delete-btn" type="button" title="Delete message" onclick="event.stopPropagation();deleteMessage('${esc(m.id||"")}')"><i class="fa-solid fa-trash-can"></i></button></div></div>
-    </div></div>`;
+    return separator+messageHTML(m);
   }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
-  if(wasAtBottom)box.scrollTop=box.scrollHeight;
-  else box.scrollTop=Math.max(0,oldTop+(box.scrollHeight-oldHeight));
+  if(wasAtBottom){
+    box.scrollTop=box.scrollHeight;
+  }else if(anchor){
+    const next=box.querySelector(`.msg-row[data-message-id=\"${CSS.escape(String(anchor.id))}\"]`);
+    if(next)box.scrollTop=Math.max(0,box.scrollTop+(next.getBoundingClientRect().top-anchor.top));
+    else box.scrollTop=Math.max(0,oldTop+(box.scrollHeight-oldHeight));
+  }else{
+    box.scrollTop=Math.max(0,oldTop+(box.scrollHeight-oldHeight));
+  }
 }
 function subscribeChat(uid){
-  chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];
-  activeMessageMap=new Map([...messageMap.values()].filter(m=>activeFriend?.isGroup?m.groupId===uid:((m.senderUid===me.uid&&m.receiverUid===uid)||(m.senderUid===uid&&m.receiverUid===me.uid))).map(m=>[m.id,m]));
+  // One realtime source only. The global /messages child listener owns live
+  // updates; this function only selects the current conversation.
+  chatUnsubs.forEach(u=>u&&u());
+  chatUnsubs=[];
+  const isGroup=!!activeFriend?.isGroup;
+  const belongs=m=>isGroup
+    ?String(m?.groupId||"")===String(uid)
+    :((String(m?.senderUid)===String(me?.uid)&&String(m?.receiverUid)===String(uid))||
+      (String(m?.senderUid)===String(uid)&&String(m?.receiverUid)===String(me?.uid)));
+  activeMessageMap=new Map([...messageMap.values()].filter(belongs).map(m=>[m.id,normalizeLocalMessage(m)]));
   renderMessages();
-  const ref=MESSAGES();
-  const mergeSnap=s=>{
-    const items=s.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()}));
-    items.forEach(m=>{
-      // Reconcile the optimistic local message with the authoritative Firestore message.
-      // The clientMessageId is generated before upload, so the sender can replace the
-      // "Uploading…" bubble immediately when the write becomes visible in onSnapshot.
-      if(m.clientMessageId){
-        const pendingId=String(m.clientMessageId);
-        const pending=activeMessageMap.get(pendingId)||messageMap.get(pendingId);
-        if(pending?.localPending){
-          activeMessageMap.delete(pendingId);
-          messageMap.delete(pendingId);
-          (pending.imageUrls||[]).forEach(u=>{try{if(String(u).startsWith('blob:'))URL.revokeObjectURL(u)}catch(_){}});
+  if(!activeMessageMap.size){
+    const ref=MESSAGES();
+    (async()=>{
+      try{
+        let docs=[];
+        if(isGroup){docs=(await ref.where("groupId","==",uid).get()).docs;}
+        else{
+          const [a,b]=await Promise.all([
+            ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).get(),
+            ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).get()
+          ]);
+          docs=[...a.docs,...b.docs];
         }
-      }
-      activeMessageMap.set(m.id,m);
-      messageMap.set(m.id,m);
-    });
-    idbPutMessages(items).catch(()=>{});
-    preloadMessageImages(items).catch(()=>{});
-    renderMessages();
-    hydrateRenderedMessageImages(items).catch(()=>{});
-  };
-  if(activeFriend?.isGroup){chatUnsubs.push(ref.where("groupId","==",uid).onSnapshot(mergeSnap));}
-  else{
-    chatUnsubs.push(ref.where("senderUid","==",me.uid).where("receiverUid","==",uid).onSnapshot(mergeSnap));
-    chatUnsubs.push(ref.where("senderUid","==",uid).where("receiverUid","==",me.uid).onSnapshot(mergeSnap));
+        docs.forEach(d=>{const m=normalizeLocalMessage({id:d.id,...d.data()});messageMap.set(m.id,m);activeMessageMap.set(m.id,m)});
+        if(docs.length){cacheMessages();renderChats();updateChatUnreadBadge();renderMessages();}
+      }catch(e){console.warn("chat cold-open read",e)}
+    })();
   }
 }
 async function openChat(uid){
@@ -1865,7 +1869,8 @@ async function idbGetMeta(key){const x=await idbGet(FM_STORES.meta,key);return x
 function normalizeLocalMessage(m){
   const conversationId=m.conversationId || (m.groupId?`group:${m.groupId}`:pair(m.senderUid,m.receiverUid));
   const persisted=canonicalMessageTime(m.createdAt);
-  return {...m,createdAtMs:persisted || Number(m.createdAtMs)||Number(m.timestamp)||Date.now(),conversationId};
+  const stable=Number(m.createdAtMs)||Number(m.timestamp)||persisted||Date.now();
+  return {...m,createdAtMs:stable,conversationId};
 }
 async function migrateLocalMessagesV2(db){
   const done=await new Promise(resolve=>{
