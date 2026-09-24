@@ -26,3 +26,6 @@ Audio/video calling uses Agora Web SDK. The Firebase database handles call invit
 - Stable message timestamp across reaction/read-state updates.
 - Reaction updates preserve chronological order and scroll position.
 - Stronger unread chat card styling, including dark mode.
+
+
+Update v22: reaction overlay overflow visibility and removable attachment queue controls.
