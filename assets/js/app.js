@@ -116,6 +116,9 @@ const CALLS=()=>new RTCollection("calls");
 const IMAGE_UPLOAD_KEY="1abc9f66636c45ace1d0952e080d153d";
 const FILE_UPLOAD_ENDPOINT="https://upload.gofile.io/uploadfile";
 let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=[],activeFriend=null,chatUnsubs=[],listUnsubs=[],typingUnsub=null,typingTimer=null,attachedImages=[],attachedFiles=[],messageMap=new Map(),activeMessageMap=new Map(),peopleTab="friends",messageRootUnsub=null;
+// Dedicated child-event registries keep People/Friends/Requests realtime even when the full collection is large or a value snapshot is delayed.
+let liveUserMap=new Map(),liveFriendMap=new Map(),liveRequestMap=new Map();
+let directoryUnsubs=[];
 const CACHE_PREFIX="fm_cache_v13_";
 const PERSISTENT_FRIENDS_PREFIX="fm_friend_registry_v1_";
 const PERSISTENT_ROOMS_PREFIX="fm_chat_rooms_registry_v1_";
@@ -677,6 +680,8 @@ function heartbeat(){if(!me)return;const ping=()=>USERS().doc(me.uid).set({onlin
 window.addEventListener("beforeunload",()=>{if(me)USERS().doc(me.uid).set({online:false,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{})});
 function stopListeners(){
   listUnsubs.forEach(u=>{try{u&&u()}catch(_){}});listUnsubs=[];
+  directoryUnsubs.forEach(u=>{try{u&&u()}catch(_){}});directoryUnsubs=[];
+  liveUserMap=new Map();liveFriendMap=new Map();liveRequestMap=new Map();
   if(notificationUnsub){try{notificationUnsub()}catch(_){} notificationUnsub=null;}
   if(callInviteUnsub){try{callInviteUnsub()}catch(_){} callInviteUnsub=null;}
   if(callUnsub){try{callUnsub()}catch(_){} callUnsub=null;}
@@ -711,55 +716,99 @@ function startListeners(){
     }
   };
 
-  safeListen("users",USERS(),s=>{
-    const liveUsers=s.docs.map(d=>({uid:d.id,...d.data()})).filter(x=>x.uid!==me.uid);
-    // Merge realtime users into the warm cache instead of replacing it. This
-    // preserves profile fields (especially photoURL) during the first/partial
-    // snapshot and prevents chat avatars from disappearing on refresh.
-    if(liveUsers.length>0){
-      const merged=new Map();
-      [...users,...liveUsers].forEach(u=>{
-        const uid=String(u?.uid||"");
-        if(!uid)return;
-        merged.set(uid,{...(merged.get(uid)||{}),...u});
-      });
-      users=[...merged.values()].filter(x=>String(x.uid)!==String(me.uid));
+  // USERS / FIND PEOPLE: use child events instead of waiting for the entire
+  // /users value snapshot. A newly created Google account is therefore visible
+  // in Find people as soon as its /users/<uid> record is written.
+  try{
+    const usersRef=db.ref("users");
+    const applyUser=(key,value)=>{
+      const uid=String(key||"");
+      if(!uid||uid===String(me.uid))return;
+      if(value==null){liveUserMap.delete(uid);users=users.filter(u=>String(u.uid)!==uid);}
+      else liveUserMap.set(uid,{uid,...value});
+      const merged=new Map(users.map(u=>[String(u.uid),u]));
+      liveUserMap.forEach((u,id)=>merged.set(id,{...(merged.get(id)||{}),...u}));
+      users=[...merged.values()].filter(u=>String(u.uid)!==String(me.uid));
       saveLocal("users",users);
-    }
-    renderPeople();renderGroups();renderChats();updateRequestBadge();
-  });
+      renderPeople();renderGroups();renderChats();
+    };
+    const ua=s=>applyUser(s.key,s.val()), uc=s=>applyUser(s.key,s.val()), ur=s=>{
+      const uid=String(s.key||"");liveUserMap.delete(uid);
+      users=users.filter(u=>String(u.uid)!==uid);saveLocal("users",users);
+      renderPeople();renderGroups();renderChats();
+    };
+    usersRef.on("child_added",ua,e=>console.warn("users child_added",e));
+    usersRef.on("child_changed",uc,e=>console.warn("users child_changed",e));
+    usersRef.on("child_removed",ur,e=>console.warn("users child_removed",e));
+    directoryUnsubs.push(()=>{usersRef.off("child_added",ua);usersRef.off("child_changed",uc);usersRef.off("child_removed",ur)});
+    // One bootstrap read ensures the map is populated even if a child event is
+    // delayed by the browser/network during the first paint.
+    usersRef.once("value").then(s=>{
+      const raw=s.val()||{};
+      Object.entries(raw).forEach(([uid,v])=>{if(uid!==String(me.uid)&&v)liveUserMap.set(uid,{uid,...v})});
+      users=[...liveUserMap.values()];
+      saveLocal("users",users);renderPeople();renderGroups();renderChats();
+    }).catch(e=>console.warn("users bootstrap",e));
+  }catch(e){console.warn("users realtime setup",e);}
 
-  safeListen("friends",FRIENDS(),s=>{
-    const liveFriends=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>String(x.ownerUid)===String(me.uid));
-    const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
-    const cachedFriends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
-    // Never let an empty/partial first snapshot erase the last known Home rooms.
-    // A later non-empty realtime snapshot replaces the cache with authoritative data.
-    if(liveFriends.length>0){
-      friends=mergePersistentFriends(liveFriends)||liveFriends;
-      friendsSyncReady=true;
-      saveLocal("friends",friends);
-      const rooms=buildChatRoomCache();
-      if(rooms.length)saveLocal("chatRooms",rooms);
-    }else{
-      const registry=Array.isArray(readJsonKey(persistentFriendsKey(),[]))?readJsonKey(persistentFriendsKey(),[]):[];
-      friends=cachedFriends.length?cachedFriends:(registry.length?registry:friends);
-      friendsSyncReady=false;
-    }
-    renderPeople();renderGroups();renderChats();updateStats();
-    scheduleWarmFriendChatCaches();
-  });
+  // FRIENDS: child events update both users' mirrored friend records immediately.
+  try{
+    const friendsRef=db.ref("friends");
+    const rebuildFriends=()=>{
+      const own=[...liveFriendMap.values()].filter(x=>String(x.ownerUid)===String(me.uid));
+      if(own.length){
+        friends=mergePersistentFriends(own)||own;
+        friendsSyncReady=true;
+        saveLocal("friends",friends);
+        const rooms=buildChatRoomCache();if(rooms.length)saveLocal("chatRooms",rooms);
+      }else{
+        // Do not erase cached friends until Firebase has actually delivered the
+        // current set; an empty cache is valid when the account has no friends.
+        const registry=readJsonKey(persistentFriendsKey(),[]);
+        const cachedRooms=normalizeChatRooms(loadLocal("chatRooms",[]));
+        const cachedFriends=cachedRooms.filter(x=>x.kind==="friend").map(x=>x.friend).filter(Boolean);
+        friends=Array.isArray(registry)&&registry.length?registry:(cachedFriends.length?cachedFriends:[]);
+        friendsSyncReady=true;
+      }
+      renderPeople();renderGroups();renderChats();updateStats();scheduleWarmFriendChatCaches();
+    };
+    const fa=s=>{if(s.val())liveFriendMap.set(String(s.key),{id:s.key,...s.val()});else liveFriendMap.delete(String(s.key));rebuildFriends()};
+    const fr=s=>{liveFriendMap.delete(String(s.key));rebuildFriends()};
+    friendsRef.on("child_added",fa,e=>console.warn("friends child_added",e));
+    friendsRef.on("child_changed",fa,e=>console.warn("friends child_changed",e));
+    friendsRef.on("child_removed",fr,e=>console.warn("friends child_removed",e));
+    directoryUnsubs.push(()=>{friendsRef.off("child_added",fa);friendsRef.off("child_changed",fa);friendsRef.off("child_removed",fr)});
+    friendsRef.once("value").then(s=>{
+      liveFriendMap=new Map(Object.entries(s.val()||{}).filter(([,v])=>v).map(([id,v])=>[id,{id,...v}]));
+      rebuildFriends();
+    }).catch(e=>console.warn("friends bootstrap",e));
+  }catch(e){console.warn("friends realtime setup",e);}
 
-  safeListen("friendRequests",REQUESTS(),s=>{
-    const all=s.docs.map(d=>({id:d.id,...d.data()}));
-    const pendingIncoming=all.filter(x=>String(x.receiverUid)===String(me.uid)&&x.status==="pending");
-    const pendingOutgoing=all.filter(x=>String(x.senderUid)===String(me.uid)&&x.status==="pending");
-    const time=x=>rtdbToMillis(x?.createdAt)||rtdbToMillis(x?.respondedAt)||0;
-    requests=pendingIncoming.sort((a,b)=>time(b)-time(a));
-    sentRequests=pendingOutgoing.sort((a,b)=>time(b)-time(a));
-    saveLocal("requests",requests);saveLocal("sentRequests",sentRequests);
-    updateRequestBadge();renderPeople();renderChats();updateStats();
-  });
+  // REQUESTS: maintain a local map keyed by request id. This makes incoming and
+  // outgoing requests appear/vanish immediately without a manual refresh.
+  try{
+    const reqRef=db.ref("friendRequests");
+    const rebuildRequests=()=>{
+      const all=[...liveRequestMap.values()];
+      const pendingIncoming=all.filter(x=>String(x.receiverUid)===String(me.uid)&&x.status==="pending");
+      const pendingOutgoing=all.filter(x=>String(x.senderUid)===String(me.uid)&&x.status==="pending");
+      const tm=x=>rtdbToMillis(x?.createdAt)||rtdbToMillis(x?.respondedAt)||0;
+      requests=pendingIncoming.sort((a,b)=>tm(b)-tm(a));
+      sentRequests=pendingOutgoing.sort((a,b)=>tm(b)-tm(a));
+      saveLocal("requests",requests);saveLocal("sentRequests",sentRequests);
+      updateRequestBadge();renderPeople();renderChats();updateStats();
+    };
+    const ra=s=>{if(s.val())liveRequestMap.set(String(s.key),{id:s.key,...s.val()});else liveRequestMap.delete(String(s.key));rebuildRequests()};
+    const rr=s=>{liveRequestMap.delete(String(s.key));rebuildRequests()};
+    reqRef.on("child_added",ra,e=>console.warn("friendRequests child_added",e));
+    reqRef.on("child_changed",ra,e=>console.warn("friendRequests child_changed",e));
+    reqRef.on("child_removed",rr,e=>console.warn("friendRequests child_removed",e));
+    directoryUnsubs.push(()=>{reqRef.off("child_added",ra);reqRef.off("child_changed",ra);reqRef.off("child_removed",rr)});
+    reqRef.once("value").then(s=>{
+      liveRequestMap=new Map(Object.entries(s.val()||{}).filter(([,v])=>v).map(([id,v])=>[id,{id,...v}]));
+      rebuildRequests();
+    }).catch(e=>console.warn("friendRequests bootstrap",e));
+  }catch(e){console.warn("friendRequests realtime setup",e);}
 
   safeListen("groups",GROUPS(),s=>{
     const liveGroups=s.docs.map(d=>({id:d.id,...d.data()})).filter(x=>(x.memberUids||[]).some(id=>String(id)===String(me.uid)))
@@ -1309,22 +1358,34 @@ async function acceptRequest(id,uid){
     const reqSnap=await reqRef.get();
     if(!reqSnap.exists)throw new Error("REQUEST_NOT_FOUND");
     const req=reqSnap.data()||{};
-    if(req.receiverUid!==me.uid||req.senderUid!==uid)throw new Error("REQUEST_INVALID");
+    if(String(req.receiverUid)!==String(me.uid)||String(req.senderUid)!==String(uid))throw new Error("REQUEST_INVALID");
     if(req.status!=="pending")throw new Error("REQUEST_ALREADY_HANDLED");
-    const now=firebase.firestore.Timestamp.now();
+
+    const now=Date.now();
     const p=pair(me.uid,uid);
-    const batch=db.batch();
-    batch.set(FRIENDS().doc(p+"__"+me.uid),{pairId:p,ownerUid:me.uid,friendUid:uid,requestId:id,createdAt:now},{merge:true});
-    batch.set(FRIENDS().doc(p+"__"+uid),{pairId:p,ownerUid:uid,friendUid:me.uid,requestId:id,createdAt:now},{merge:true});
-    batch.set(reqRef,{status:"accepted",respondedAt:now},{merge:true});
-    await batch.commit();
+    const friendA={pairId:p,ownerUid:me.uid,friendUid:uid,requestId:id,createdAt:now};
+    const friendB={pairId:p,ownerUid:uid,friendUid:me.uid,requestId:id,createdAt:now};
+    // A single RTDB multi-location update makes the friendship and request
+    // status change together, so the two users cannot see a half-created friend.
+    await db.ref().update({
+      [`friends/${p}__${me.uid}`]:friendA,
+      [`friends/${p}__${uid}`]:friendB,
+      [`friendRequests/${id}/status`]:"accepted",
+      [`friendRequests/${id}/respondedAt`]:now
+    });
+
     toast("Friend added");
     peopleTab="friends";
     document.querySelectorAll("[data-people-tab]").forEach(x=>x.classList.toggle("active",x.dataset.peopleTab==="friends"));
     renderPeople();
   }catch(e){
     console.error("acceptRequest",e);
-    const msg=e?.code==="permission-denied"?"Friend request গ্রহণ করার অনুমতি নেই। আবার চেষ্টা করুন।":e?.message==="REQUEST_NOT_FOUND"?"Request আর পাওয়া যাচ্ছে না":e?.message==="REQUEST_INVALID"?"এই request আপনার জন্য নয়":e?.message==="REQUEST_ALREADY_HANDLED"?"এই request আগে থেকেই সম্পন্ন হয়েছে":"Friend request accept করা যায়নি";
+    const msg=e?.code==="PERMISSION_DENIED"||e?.code==="permission-denied"
+      ?"Friend request গ্রহণ করার permission নেই। Firebase Rules প্রকাশ করা হয়েছে কি না দেখুন।"
+      :e?.message==="REQUEST_NOT_FOUND"?"Request আর পাওয়া যাচ্ছে না"
+      :e?.message==="REQUEST_INVALID"?"এই request আপনার জন্য নয়"
+      :e?.message==="REQUEST_ALREADY_HANDLED"?"এই request আগে থেকেই সম্পন্ন হয়েছে"
+      :"Friend request accept করা যায়নি";
     toast(msg);
   }
 }
