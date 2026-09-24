@@ -1962,17 +1962,23 @@ function createViewerPanzoom(){
   wrap.addEventListener('panzoomstart',()=>wrap.classList.add('is-dragging'));
   wrap.addEventListener('panzoomend',()=>wrap.classList.remove('is-dragging'));
 
-  // Wheel zoom is deliberately centered. Do not pass a focal point here:
-  // Panzoom's focal coordinates are relative to its parent and passing stage
-  // coordinates can introduce a vertical jump when the stage has toolbars or
-  // safe-area offsets.
+  // Zoom around the exact mouse/pointer location. Panzoom expects focal
+  // coordinates relative to its parent, so convert client coordinates to the
+  // image stage's local coordinate system before every wheel zoom.
   stage.onwheel=e=>{
     if($('fmImageViewer')?.classList.contains('hidden') || !fmViewerPanzoom)return;
     e.preventDefault();e.stopPropagation();
+    const rect=stage.getBoundingClientRect();
+    const focal={x:e.clientX-rect.left,y:e.clientY-rect.top};
     const current=fmViewerPanzoom.getScale?.()||1;
     const factor=Math.exp(-e.deltaY*0.00115);
     const next=Math.max(1,Math.min(5,current*factor));
-    try{fmViewerPanzoom.zoom(next,{animate:true,duration:170})}catch(_){ }
+    if(Math.abs(next-current)<0.0001)return;
+    try{
+      fmViewerPanzoom.zoom(next,{focal,animate:true,duration:170});
+    }catch(_){
+      try{fmViewerPanzoom.zoom(next,{focal})}catch(__){}
+    }
   };
 
   stage.ondblclick=e=>{
