@@ -1,5 +1,5 @@
-const CACHE="fast-messenger-shell-v19";
-const RUNTIME="fast-messenger-runtime-v19";
+const CACHE="fast-messenger-shell-v20";
+const RUNTIME="fast-messenger-runtime-v20";
 const SHELL=["./","./index.html","./assets/js/app.js","./assets/theme-background.webp","./assets/logo.webp"];
 
 self.addEventListener("install",e=>e.waitUntil(

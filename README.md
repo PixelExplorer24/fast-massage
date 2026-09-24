@@ -19,3 +19,10 @@ The ZIP cannot publish Firebase rules automatically.
 ## Call note
 
 Audio/video calling uses Agora Web SDK. The Firebase database handles call invitations/status/signalling metadata. If Agora App Certificate/token authentication is enabled, an Agora token service is also required.
+
+
+## v20 fixes
+- Single-source realtime message timeline; sender/receiver listeners no longer race.
+- Stable message timestamp across reaction/read-state updates.
+- Reaction updates preserve chronological order and scroll position.
+- Stronger unread chat card styling, including dark mode.
