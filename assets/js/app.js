@@ -115,7 +115,7 @@ const CALLS=()=>new RTCollection("calls");
 
 const IMAGE_UPLOAD_KEY="1abc9f66636c45ace1d0952e080d153d";
 const FILE_UPLOAD_ENDPOINT="https://upload.gofile.io/uploadfile";
-let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=[],activeFriend=null,chatUnsubs=[],listUnsubs=[],typingUnsub=null,typingTimer=null,attachedImages=[],attachedFiles=[],messageMap=new Map(),activeMessageMap=new Map(),peopleTab="friends";
+let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=[],activeFriend=null,chatUnsubs=[],listUnsubs=[],typingUnsub=null,typingTimer=null,attachedImages=[],attachedFiles=[],messageMap=new Map(),activeMessageMap=new Map(),peopleTab="friends",messageRootUnsub=null;
 const CACHE_PREFIX="fm_cache_v13_";
 const PERSISTENT_FRIENDS_PREFIX="fm_friend_registry_v1_";
 const PERSISTENT_ROOMS_PREFIX="fm_chat_rooms_registry_v1_";
@@ -810,6 +810,39 @@ function startListeners(){
   // Final synchronous paint after all listeners have been attached. This also
   // covers the case where Firebase callbacks are delayed by network startup.
   renderChats();
+
+  // One-time bootstrap reads complement the realtime listeners. They make the
+  // initial Home/People/Groups state deterministic even on a cold load, slow
+  // connection, or when the first RTDB value event is delayed.
+  Promise.allSettled([
+    USERS().get(), FRIENDS().get(), REQUESTS().get(), GROUPS().get(), MESSAGES().get()
+  ]).then(([uSnap,fSnap,rSnap,gSnap,mSnap])=>{
+    if(!me)return;
+    try{
+      if(uSnap.status==="fulfilled") users=uSnap.value.docs.map(d=>({uid:d.id,...d.data()})).filter(x=>String(x.uid)!==String(me.uid));
+      if(fSnap.status==="fulfilled") {
+        const live=fSnap.value.docs.map(d=>({id:d.id,...d.data()})).filter(x=>String(x.ownerUid)===String(me.uid));
+        if(live.length) friends=mergePersistentFriends(live)||live;
+      }
+      if(rSnap.status==="fulfilled") {
+        const all=rSnap.value.docs.map(d=>({id:d.id,...d.data()}));
+        requests=all.filter(x=>String(x.receiverUid)===String(me.uid)&&x.status==="pending");
+        sentRequests=all.filter(x=>String(x.senderUid)===String(me.uid)&&x.status==="pending");
+      }
+      if(gSnap.status==="fulfilled") {
+        const live=gSnap.value.docs.map(d=>({id:d.id,...d.data()})).filter(x=>(x.memberUids||[]).some(id=>String(id)===String(me.uid)));
+        if(live.length || groups.length===0) groups=live;
+      }
+      if(mSnap.status==="fulfilled") {
+        const mine=mSnap.value.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()})).filter(isRelevantMessageForMe);
+        if(mine.length || messageMap.size===0) messageMap=new Map(mine.map(m=>[m.id,m]));
+      }
+      saveLocal("users",users); saveLocal("friends",friends); saveLocal("requests",requests);
+      saveLocal("sentRequests",sentRequests); saveLocal("groups",groups); cacheMessages();
+      const rooms=buildChatRoomCache(); if(rooms.length)saveLocal("chatRooms",rooms);
+      renderPeople(); renderGroups(); renderChats(); updateStats(); updateRequestBadge();
+    }catch(e){ console.warn("RTDB bootstrap sync",e); renderChats(); }
+  }).catch(e=>console.warn("RTDB bootstrap reads",e));
 }
 function cacheKey(name){return CACHE_PREFIX+name+(me?"_"+me.uid:"")}
 function persistentChatRoomsKey(){return me?`${PERSISTENT_ROOMS_PREFIX}${me.uid}`:""}
