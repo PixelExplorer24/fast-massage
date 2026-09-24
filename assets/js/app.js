@@ -26,7 +26,8 @@ function rtdbToMillis(v){
   return typeof v==="number"?v:Number(v)||0;
 }
 function messageTimeMs(m){
-  return Number(m?.createdAtMs)||rtdbToMillis(m?.createdAt)||Number(m?.timestamp)||0;
+  const persisted=rtdbToMillis(m?.createdAt);
+  return persisted||Number(m?.createdAtMs)||Number(m?.timestamp)||0;
 }
 function isRelevantMessageForMe(m){
   if(!m||!me)return false;
@@ -530,8 +531,15 @@ function watchActiveCall(){
 const $=id=>document.getElementById(id),esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 const avatar=u=>u?.photoURL||"https://placehold.co/120x120/e5e7eb/64748b?text=U";
 const pair=(a,b)=>[a,b].sort().join("__");
-const time=v=>{let n=v?.toMillis?v.toMillis():Number(v||0);if(!n)return"now";let d=new Date(n);return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});};
-function messageDayKey(v){const n=v?.toMillis?v.toMillis():Number(v||0);if(!n)return"unknown";const d=new Date(n);return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;}
+function canonicalMessageTime(v){
+  if(v==null||typeof v==="symbol")return 0;
+  if(v&&typeof v.toMillis==="function")return Number(v.toMillis())||0;
+  if(v&&typeof v==="object"&&v.__rtdbTimestamp!=null)return Number(v.__rtdbTimestamp)||0;
+  const n=Number(v);return Number.isFinite(n)?n:0;
+}
+function messageTimeValue(m){return canonicalMessageTime(m?.createdAt)||Number(m?.createdAtMs)||Number(m?.timestamp)||0;}
+const time=v=>{const n=canonicalMessageTime(v);if(!n)return"now";let d=new Date(n);return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});};
+function messageDayKey(v){const n=canonicalMessageTime(v);if(!n)return"unknown";const d=new Date(n);return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;}
 function messageDayLabel(v){const n=v?.toMillis?v.toMillis():Number(v||0);if(!n)return"Unknown date";const d=new Date(n),now=new Date();
   const start=new Date(now.getFullYear(),now.getMonth(),now.getDate());
   const day=new Date(d.getFullYear(),d.getMonth(),d.getDate());
@@ -837,6 +845,7 @@ function startListeners(){
       messageMap.set(m.id,m);
       cacheMessages();
       renderChats();
+      updateChatUnreadBadge();
       if(activeFriend){
         const belongs=activeFriend.isGroup
           ?String(m.groupId||"")===String(activeFriend.uid||"")
@@ -851,6 +860,7 @@ function startListeners(){
       activeMessageMap.delete(id);
       cacheMessages();
       renderChats();
+      updateChatUnreadBadge();
       if(activeFriend)renderMessages();
     };
     const onAdded=s=>upsertMessage(s),onChanged=s=>upsertMessage(s),onRemoved=s=>removeMessage(s);
@@ -1090,21 +1100,22 @@ function ensureUnreadChatStyles(){
   document.head.appendChild(style);
 }
 
+ensureUnreadChatStyles();
+
 function isUnreadMessage(m){
-  if(!m||m.groupId||!me)return false;
-  if(String(m.senderUid)!==String(me.uid)){
-    return m.seen!==true && m.read!==true;
+  if(!m||!me||String(m.senderUid)===String(me.uid))return false;
+  if(m.groupId){
+    return Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(x=>String(x)===String(me.uid))&&m.seen!==true&&m.read!==true;
   }
-  return false;
+  return String(m.receiverUid)===String(me.uid)&&m.seen!==true&&m.read!==true;
 }
 
 function getUnreadCount(uid){
-  if(!uid||!me)return 0;
-  let count=0;
+  if(!uid||!me)return 0;let count=0;
   messageMap.forEach(m=>{
-    if(String(m.senderUid)===String(uid) && String(m.receiverUid)===String(me.uid) && isUnreadMessage(m))count++;
-  });
-  return count;
+    if(String(m.groupId||"")===String(uid)&&Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(x=>String(x)===String(me.uid))&&String(m.senderUid)!==String(me.uid)&&isUnreadMessage(m))count++;
+    else if(String(m.senderUid)===String(uid)&&String(m.receiverUid)===String(me.uid)&&isUnreadMessage(m))count++;
+  });return count;
 }
 
 async function markConversationRead(uid){
@@ -1117,7 +1128,7 @@ async function markConversationRead(uid){
       unread.push(id);
     }
   });
-  if(!unread.length){renderChats();return;}
+  if(!unread.length){renderChats();updateChatUnreadBadge();return;}
 
   cacheMessages();
   try{await idbPutMessages(unread.map(id=>messageMap.get(id)));}catch(e){console.warn("local read state update",e)}
@@ -1130,6 +1141,30 @@ async function markConversationRead(uid){
       console.warn("message read-state sync",id,e);
     }
   }));
+}
+
+async function markGroupConversationRead(groupId){
+  if(!me||!groupId)return;
+  const unread=[];
+  messageMap.forEach((m,id)=>{
+    if(String(m.groupId||"")===String(groupId)&&isUnreadMessage(m)){
+      const next={...m,seen:true,read:true,readAt:Date.now()};messageMap.set(id,next);unread.push(id);
+    }
+  });
+  if(!unread.length){renderChats();updateChatUnreadBadge();return;}
+  cacheMessages();renderChats();updateChatUnreadBadge();
+  await Promise.all(unread.map(async id=>{try{await MESSAGES().doc(id).update({seen:true,read:true,readAt:firebase.firestore.FieldValue.serverTimestamp()});}catch(e){console.warn("group message read-state sync",id,e);}}));
+}
+
+function updateChatUnreadBadge(){
+  const badge=$("navChatBadge");if(!badge)return;
+  let total=0;
+  messageMap.forEach(m=>{
+    if(!m||m.type==="system"||String(m.senderUid)===String(me?.uid)||m.seen===true||m.read===true)return;
+    if(m.groupId){if(Array.isArray(m.groupMemberUids)&&m.groupMemberUids.some(x=>String(x)===String(me?.uid)))total++;}
+    else if(String(m.receiverUid)===String(me?.uid))total++;
+  });
+  badge.textContent=total>99?"99+":String(total);badge.classList.toggle("hidden",total===0);badge.setAttribute("aria-label",`${total} unread messages`);
 }
 
 function renderChats(){
@@ -1213,7 +1248,7 @@ function renderChats(){
       return `<button class="chat-item" data-chat-group="${esc(g.id)}" onclick="openGroupChat('${esc(g.id)}')">
         <span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span>
         <span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${esc(preview)}</small></span>
-        <time class="item-meta">${m?time(m.createdAt):"Group"}</time>
+        <time class="item-meta">${m?time(messageTimeValue(m)):"Group"}</time>
       </button>`;
     }).join("");
 
@@ -1259,12 +1294,16 @@ function renderChats(){
       const rr=personalHtmlByUid.get(String(r.uid));
       const preview=rr.m?.type==="call"?((rr.m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(rr.m)):(rr.m?.text||((rr.m?.imageUrls||[]).length?"📷 Image":rr.m?.fileName?"📎 "+rr.m.fileName:"Start a conversation"));
       const unreadCount=getUnreadCount(rr.uid),unreadClass=unreadCount>0?" unread-chat":"",badge=unreadCount>0?`<span class="unread-badge" aria-label="${unreadCount} unread messages">${unreadCount>99?"99+":unreadCount}</span>`:"";
-      return `<button class="chat-item${unreadClass}" data-chat-uid="${esc(rr.uid)}" onclick="openChat('${esc(rr.uid)}')"><img class="avatar" src="${esc(avatar(rr.u))}" alt=""><span class="item-copy"><strong>${esc(rr.u.displayName||rr.u.email||"User")}</strong><small>${esc(preview)}</small></span>${badge}<time class="item-meta">${rr.m?time(rr.m.createdAt):"Friend"}</time></button>`;
+      return `<button class="chat-item${unreadClass}" data-chat-uid="${esc(rr.uid)}" onclick="openChat('${esc(rr.uid)}')"><img class="avatar" src="${esc(avatar(rr.u))}" alt=""><span class="item-copy"><strong>${esc(rr.u.displayName||rr.u.email||"User")}</strong><small>${esc(preview)}</small></span>${badge}<time class="item-meta">${rr.m?time(messageTimeValue(rr.m)):"Friend"}</time></button>`;
     }
     const g=r.group,m=r.m,preview=m?.type==="call"?((m.callOutcome==="completed"?"📞 ":"📵 ")+callDurationPreview(m)):m?.text||((m?.imageUrls||[]).length?"📷 ছবি":m?.fileName?"📎 "+m.fileName:"নতুন গ্রুপ");
-    return `<button class="chat-item" data-chat-group="${esc(g.id)}" onclick="openGroupChat('${esc(g.id)}')"><span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${esc(preview)}</small></span><time class="item-meta">${m?time(m.createdAt):"Group"}</time></button>`;
+    const unreadCount=getUnreadCount(g.id);
+    const unreadClass=unreadCount>0?" unread-chat":"";
+    const badge=unreadCount>0?`<span class="unread-badge" aria-label="${unreadCount} unread messages">${unreadCount>99?"99+":unreadCount}</span>`:"";
+    return `<button class="chat-item${unreadClass}" data-chat-group="${esc(g.id)}" onclick="openGroupChat('${esc(g.id)}')"><span class="group-chat-icon"><i class="fa-solid fa-user-group"></i></span><span class="item-copy"><strong>${esc(g.name||"Unnamed group")}</strong><small>${esc(preview)}</small></span>${badge}<time class="item-meta">${m?time(messageTimeValue(m)):"Group"}</time></button>`;
   }).join("");
   box.innerHTML=markup||`<div class="empty"><i class="fa-regular fa-comments" style="font-size:28px;display:block;margin-bottom:10px"></i>কোনো conversation নেই। People থেকে একজনকে বেছে নিয়ে chat শুরু করুন।</div>`;
+  updateChatUnreadBadge();
 
   // Persist the same room set used by the renderer, including groups with no messages.
   const snapshot=normalizeChatRooms([
@@ -1469,7 +1508,10 @@ async function setMessageReaction(messageId,emoji){
   if(reactions[me.uid]===emoji)delete reactions[me.uid];else reactions[me.uid]=emoji;
   try{
     await MESSAGES().doc(messageId).update({reactions});
-    m.reactions=reactions;activeMessageMap.set(messageId,m);messageMap.set(messageId,m);cacheMessages();renderMessages();
+    const persistedTime=canonicalMessageTime(m.createdAt)||Number(m.createdAtMs)||0;
+    m.reactions=reactions;
+    if(persistedTime&&!canonicalMessageTime(m.createdAt))m.createdAtMs=persistedTime;
+    activeMessageMap.set(messageId,m);messageMap.set(messageId,m);cacheMessages();renderMessages();renderChats();updateChatUnreadBadge();
   }catch(e){console.error("setMessageReaction",e);toast(e?.code==="permission-denied"?"Reaction দেওয়ার permission নেই":"Reaction দেওয়া যায়নি")}
 }
 function hideReactionBars(){document.querySelectorAll(".reaction-bar.is-open").forEach(x=>x.classList.remove("is-open"));}
@@ -1494,7 +1536,7 @@ function initMessageReactions(){
 
 function messageHTML(m){
   const mine=m.senderUid===me?.uid;
-  if(m.type==="call")return `<div class="msg-row ${mine?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
+  if(m.type==="call")return `<div class="msg-row ${mine?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(messageTimeValue(m))}</div></div></div>`;
   const imgs=Array.isArray(m.imageUrls)?m.imageUrls:[];
   const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
   const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
@@ -1512,7 +1554,7 @@ function messageHTML(m){
         : `<img class="msg-img" data-image-url="${esc(u)}" src="${esc(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="event.stopPropagation();showImage('${esc(u)}')">`;
     }).join("")}
     ${uniqueFiles.map(f=>`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
-    ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button>${delBtn}</div></div>
+    ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(messageTimeValue(m))}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button>${delBtn}</div></div>
   </div></div>`;
 }
 async function deleteMessage(id){
@@ -1532,17 +1574,17 @@ async function deleteMessage(id){
 }
 function renderMessages(){
   if(!activeFriend)return;
-  const arr=[...activeMessageMap.values()].sort((x,y)=>messageTimeMs(x)-messageTimeMs(y));
+  const arr=[...activeMessageMap.values()].sort((x,y)=>{const dt=messageTimeMs(x)-messageTimeMs(y);return dt||String(x.id||"").localeCompare(String(y.id||""));});
   const box=$("messages");
   const escUrl=u=>esc(u||"");
   const oldHeight=box.scrollHeight,oldTop=box.scrollTop;
   const wasAtBottom=(oldHeight-box.clientHeight-oldTop)<72 || oldHeight===0;
   let previousDay="";
   box.innerHTML=arr.length?arr.map(m=>{
-    const day=messageDayKey(m.createdAt||m.createdAtMs);
-    const separator=day!==previousDay?(previousDay="",messageDateSeparator(m.createdAt||m.createdAtMs)):("");
+    const day=messageDayKey(messageTimeValue(m));
+    const separator=day!==previousDay?(previousDay="",messageDateSeparator(messageTimeValue(m))):("");
     previousDay=day;
-    if(m.type==="call")return `${separator}<div class="msg-row ${m.senderUid===me.uid?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
+    if(m.type==="call")return `${separator}<div class="msg-row ${m.senderUid===me.uid?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(messageTimeValue(m))}</div></div></div>`;
     const mine=m.senderUid===me.uid,imgs=m.imageUrls||[];
     const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
     const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
@@ -1553,7 +1595,7 @@ function renderMessages(){
       ${m.text?`<div>${esc(m.text).replace(/\n/g,"<br>")}</div>`:""}
       ${imgs.map(u=>`<div class="media-bubble ${m.localPending?"media-pending":""}"><img class="msg-img" data-image-url="${escUrl(u)}" src="${escUrl(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="event.stopPropagation();showImage('${escUrl(u)}')"><div class="media-overlay-actions"><button type="button" title="Zoom" onclick="event.stopPropagation();showImage('${escUrl(u)}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button><button type="button" title="Download" onclick="event.stopPropagation();downloadOriginalImage('${escUrl(u)}')"><i class="fa-solid fa-download"></i></button></div>${m.localPending?`<span class="media-uploading"><i class="fa-solid fa-spinner fa-spin"></i> Uploading…</span>`:""}</div>`).join("")}
       ${uniqueFiles.map(f=>f.downloadPage?`<a class="file-card" href="${escUrl(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-download file-download"></i></a>`:`<div class="file-card pending-file"><span class="file-icon"><i class="fa-solid fa-file-arrow-up"></i></span><span class="file-copy"><b>${esc(f.name||"File")}</b><small>${esc(f.size?bytes(f.size):"File")} • Uploading…</small></span><i class="fa-solid fa-spinner fa-spin file-download"></i></div>`).join("")}
-      ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(m.createdAt)}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button><button class="msg-delete-btn" type="button" title="Delete message" onclick="event.stopPropagation();deleteMessage('${esc(m.id||"")}')"><i class="fa-solid fa-trash-can"></i></button></div></div>
+      ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(messageTimeValue(m))}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button><button class="msg-delete-btn" type="button" title="Delete message" onclick="event.stopPropagation();deleteMessage('${esc(m.id||"")}')"><i class="fa-solid fa-trash-can"></i></button></div></div>
     </div></div>`;
   }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
   if(wasAtBottom)box.scrollTop=box.scrollHeight;
@@ -1633,7 +1675,8 @@ async function openGroupChat(groupId){
   // Group cache uses a dedicated conversation key so it survives refresh.
   try{await renderLocalMessages(`group:${groupId}`,FM_WARM_MESSAGE_LIMIT)}catch(_){renderMessages()}
   setChatHeader(activeFriend);syncChatRoomTheme();if(!routeSyncing)pushAppRoute("chat/group/"+encodeURIComponent(groupId));$("chatPanel").classList.remove("hidden");document.body.style.overflow="hidden";subscribeChat(groupId);watchTyping();renderMessages();
-  const jumpToLatest=()=>{const box=$("messages");if(box){box.style.scrollBehavior="auto";box.scrollTop=box.scrollHeight;requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight})}};jumpToLatest()
+  const jumpToLatest=()=>{const box=$("messages");if(box){box.style.scrollBehavior="auto";box.scrollTop=box.scrollHeight;requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight})}};jumpToLatest();
+  await markGroupConversationRead(groupId);
 }
 function closeChat(){currentConversationId=null;chatUnsubs.forEach(u=>u&&u());chatUnsubs=[];if(typingUnsub)typingUnsub();typingUnsub=null;activeFriend=null;$("chatPanel")?.classList.add("hidden");document.body.style.overflow="";attachedImages=[];attachedFiles=[];replyTarget=null;renderUploadQueue();renderReplyPreview();if(!routeSyncing&&String(location.hash||"").startsWith("#chat/")){history.back()}}
 function watchTyping(){if(typingUnsub)typingUnsub();if(!activeFriend||activeFriend.isGroup){$("typing").classList.add("hidden");return}typingUnsub=USERS().doc(activeFriend.uid).onSnapshot(s=>{$("typing").classList.toggle("hidden",(s.data()||{}).typingTo!==me.uid)})}
@@ -1821,10 +1864,8 @@ async function idbSetMeta(key,value){return idbPut(FM_STORES.meta,{key,value})}
 async function idbGetMeta(key){const x=await idbGet(FM_STORES.meta,key);return x?.value}
 function normalizeLocalMessage(m){
   const conversationId=m.conversationId || (m.groupId?`group:${m.groupId}`:pair(m.senderUid,m.receiverUid));
-  return {...m,
-    createdAtMs:m.createdAtMs || (m.createdAt?.toMillis?m.createdAt.toMillis():Date.now()),
-    conversationId
-  };
+  const persisted=canonicalMessageTime(m.createdAt);
+  return {...m,createdAtMs:persisted || Number(m.createdAtMs)||Number(m.timestamp)||Date.now(),conversationId};
 }
 async function migrateLocalMessagesV2(db){
   const done=await new Promise(resolve=>{
@@ -1931,8 +1972,8 @@ function renderMessagesFromPlain(items,options={}){
   }
   let previousDay="";
   box.innerHTML=items.map(m=>{
-    const day=messageDayKey(m.createdAt||m.createdAtMs);
-    const separator=day!==previousDay?messageDateSeparator(m.createdAt||m.createdAtMs):"";
+    const day=messageDayKey(messageTimeValue(m));
+    const separator=day!==previousDay?messageDateSeparator(messageTimeValue(m)):"";
     previousDay=day;
     return separator+messageHTML(m);
   }).join("");
@@ -2580,7 +2621,7 @@ initPreferences();
 initMessageReactions();
 
 // Profile pictures open in the same full-screen lightbox.
-["profileAvatar","userModalAvatar","chatAvatar","headerAvatar"].forEach(id=>{
+["profileAvatar","userModalAvatar","chatAvatar"].forEach(id=>{
   const el=$(id);
   if(el){
     el.style.cursor="zoom-in";
