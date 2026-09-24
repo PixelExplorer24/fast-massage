@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Bengali:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-<link rel="stylesheet" href="./assets/css/app.css?v=8">
+<link rel="stylesheet" href="./assets/css/app.css?v=9">
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
@@ -38,6 +38,12 @@ body.dark{background:#0b1220 var(--messenger-theme-bg) center center/cover fixed
 .chat-item,.person-item{background:transparent !important;background-color:transparent !important;border-color:rgba(80,110,140,.16) !important;box-shadow:none !important;backdrop-filter:none !important;}
 .chat-item:hover,.person-item:hover,.settings-item:hover{background:rgba(255,255,255,.12) !important;}
 body.dark .chat-item:hover,body.dark .person-item:hover,body.dark .settings-item:hover{background:rgba(0,0,0,.10) !important;}
+/* Realtime unread room state: must override the transparent theme canvas. */
+.chat-item.unread-chat{background:rgba(86,166,255,.16) !important;background-color:rgba(86,166,255,.16) !important;border-color:rgba(37,126,220,.30) !important;}
+.chat-item.unread-chat:hover{background:rgba(86,166,255,.23) !important;background-color:rgba(86,166,255,.23) !important;}
+.chat-item.unread-chat .item-copy strong{font-weight:800 !important;}
+.chat-item .unread-badge{min-width:22px;height:22px;padding:0 7px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:#2196f3;color:#fff;font-size:10px;font-weight:800;line-height:1;box-shadow:0 2px 8px rgba(33,150,243,.24);flex:0 0 auto;}
+.nav-item .nav-badge:not(.hidden){display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;}
 .search-wrap input{background:transparent !important;box-shadow:none !important;}
 .chat-panel{background:rgba(255,255,255,.08) !important;backdrop-filter:blur(2px) !important;}
 body.dark .chat-panel{background:rgba(0,0,0,.10) !important;}
@@ -417,7 +423,7 @@ body.fm-viewer-open{overflow:hidden!important;overscroll-behavior:none;touch-act
 </div></div>
 
 <div id="lightbox" class="lightbox hidden"><button id="closeLightbox"><i class="fa-solid fa-xmark"></i></button><img id="lightboxImg" alt=""></div>
-<script src="./assets/js/app.js?v=friendfix17"></script>
+<script src="./assets/js/app.js?v=friendfix19"></script>
 <script>
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
