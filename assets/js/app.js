@@ -726,7 +726,7 @@ function startListeners(){
       users=[...merged.values()].filter(x=>String(x.uid)!==String(me.uid));
       saveLocal("users",users);
     }
-    renderPeople();renderGroups();renderChats();
+    renderPeople();renderGroups();renderChats();updateRequestBadge();
   });
 
   safeListen("friends",FRIENDS(),s=>{
@@ -752,10 +752,13 @@ function startListeners(){
 
   safeListen("friendRequests",REQUESTS(),s=>{
     const all=s.docs.map(d=>({id:d.id,...d.data()}));
-    requests=all.filter(x=>x.receiverUid===me.uid&&x.status==="pending");
-    sentRequests=all.filter(x=>x.senderUid===me.uid&&x.status==="pending");
+    const pendingIncoming=all.filter(x=>String(x.receiverUid)===String(me.uid)&&x.status==="pending");
+    const pendingOutgoing=all.filter(x=>String(x.senderUid)===String(me.uid)&&x.status==="pending");
+    const time=x=>rtdbToMillis(x?.createdAt)||rtdbToMillis(x?.respondedAt)||0;
+    requests=pendingIncoming.sort((a,b)=>time(b)-time(a));
+    sentRequests=pendingOutgoing.sort((a,b)=>time(b)-time(a));
     saveLocal("requests",requests);saveLocal("sentRequests",sentRequests);
-    updateRequestBadge();renderPeople();
+    updateRequestBadge();renderPeople();renderChats();updateStats();
   });
 
   safeListen("groups",GROUPS(),s=>{
@@ -2445,8 +2448,12 @@ auth.onAuthStateChanged(async user=>{
     syncProfile();syncMenu();hydrateLocalCache();
     renderChats();
     if(typeof requestAnimationFrame==="function")requestAnimationFrame(()=>{hydrateLocalCache();syncProfile();renderChats()});
-    heartbeat();startListeners();watchIncomingNotifications();watchCallInvites();scheduleWarmFriendChatCaches();
-    ensureUser().then(()=>saveLocal("profile",profile)).catch(e=>console.warn("profile sync delayed",e));
+    heartbeat();
+    // Complete the user/profile write before attaching People/Friends listeners.
+    // This guarantees a freshly created Google account is present in /users before
+    // Find People and realtime friend/request synchronization starts.
+    await ensureUser().then(()=>saveLocal("profile",profile)).catch(e=>console.warn("profile sync delayed",e));
+    startListeners();watchIncomingNotifications();watchCallInvites();scheduleWarmFriendChatCaches();
   }else{
     if(window.__resetGoogleLoginLoading)window.__resetGoogleLoginLoading();
     localStorage.removeItem("fm_session_uid");
