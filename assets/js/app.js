@@ -1636,6 +1636,19 @@ function renderMessages(){
   }).join(""):"<div class=\"empty\">কোনো message নেই।</div>";
   if(wasAtBottom){
     box.scrollTop=box.scrollHeight;
+    // Images change the scrollHeight after the bubble has been rendered. Keep
+    // the newest message anchored at the bottom when an image finishes loading.
+    // Do not do this when the user is reading older messages.
+    box.querySelectorAll('.msg-img').forEach(img=>{
+      const keepBottom=()=>{
+        if((box.scrollHeight-box.clientHeight-box.scrollTop)<140){
+          box.scrollTop=box.scrollHeight;
+          requestAnimationFrame(()=>{if((box.scrollHeight-box.clientHeight-box.scrollTop)<180)box.scrollTop=box.scrollHeight});
+        }
+      };
+      if(img.complete)requestAnimationFrame(keepBottom);
+      else img.addEventListener('load',keepBottom,{once:true});
+    });
   }else if(anchor){
     const next=box.querySelector(`.msg-row[data-message-id=\"${CSS.escape(String(anchor.id))}\"]`);
     if(next)box.scrollTop=Math.max(0,box.scrollTop+(next.getBoundingClientRect().top-anchor.top));
@@ -1656,6 +1669,37 @@ function subscribeChat(uid){
       (String(m?.senderUid)===String(uid)&&String(m?.receiverUid)===String(me?.uid)));
   activeMessageMap=new Map([...messageMap.values()].filter(belongs).map(m=>[m.id,normalizeLocalMessage(m)]));
   renderMessages();
+
+  // Active-room realtime listeners: the global /messages listener is kept for
+  // Home/unread state, while these focused listeners guarantee that a reply
+  // arriving in the currently open room is painted immediately.
+  const activeUpsert=snap=>{
+    const raw=snap.val();
+    if(!raw||!isRelevantMessageForMe(raw)||!belongs(raw))return;
+    const m=normalizeLocalMessage({id:snap.key,...raw});
+    const existing=activeMessageMap.get(m.id);
+    if(existing?.localPending && !canonicalMessageTime(raw.createdAt))return;
+    activeMessageMap.set(m.id,m);
+    messageMap.set(m.id,m);
+    cacheMessages();
+    renderMessages();
+    hydrateRenderedMessageImages([m]).catch(()=>{});
+  };
+  const attachRoomListener=(query)=>{
+    const onAdded=s=>activeUpsert(s),onChanged=s=>activeUpsert(s);
+    query.on('child_added',onAdded,e=>console.warn('active chat child_added',e));
+    query.on('child_changed',onChanged,e=>console.warn('active chat child_changed',e));
+    return()=>{query.off('child_added',onAdded);query.off('child_changed',onChanged)};
+  };
+  try{
+    if(isGroup){
+      chatUnsubs.push(attachRoomListener(db.ref('messages').orderByChild('groupId').equalTo(String(uid))));
+    }else{
+      chatUnsubs.push(attachRoomListener(db.ref('messages').orderByChild('receiverUid').equalTo(String(uid))));
+      chatUnsubs.push(attachRoomListener(db.ref('messages').orderByChild('receiverUid').equalTo(String(me.uid))));
+    }
+  }catch(e){console.warn('active room realtime listener setup',e)}
+
   if(!activeMessageMap.size){
     const ref=MESSAGES();
     (async()=>{
