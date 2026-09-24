@@ -74,10 +74,16 @@ class RTDoc{
   onSnapshot(cb,err){let first=true,previous=null;const r=db.ref(this.path);const fn=s=>{try{const val=s.val();const snap=new RTDocSnap(this.id,val);if(first){previous=val;first=false}else previous=val;cb(snap)}catch(e){err?.(e)}};r.on("value",fn,e=>err?.(e));return()=>r.off("value",fn)}
   async set(data,opts={}){
     const ref=db.ref(this.path);
-    if(opts?.merge){const old=(await ref.once("value")).val()||{};return ref.set(mergeObject(old,data))}
+    if(opts?.merge){
+      return ref.transaction(current=>mergeObject(current||{},data));
+    }
     return ref.set(rtdbResolve(data,null));
   }
-  async update(data){const old=(await db.ref(this.path).once("value")).val()||{};return db.ref(this.path).set(mergeObject(old,data))}
+  async update(data){
+    // Atomic read-modify-write: the previous implementation performed a separate
+    // read followed by set(), so two fast sends/reactions could overwrite each other.
+    return db.ref(this.path).transaction(current=>mergeObject(current||{},data));
+  }
   async delete(){return db.ref(this.path).remove()}
 }
 class RTCollection{
@@ -120,7 +126,7 @@ let me=null,profile=null,users=[],friends=[],requests=[],sentRequests=[],groups=
 // Dedicated child-event registries keep People/Friends/Requests realtime even when the full collection is large or a value snapshot is delayed.
 let liveUserMap=new Map(),liveFriendMap=new Map(),liveRequestMap=new Map();
 let directoryUnsubs=[];
-const CACHE_PREFIX="fm_cache_v14_";
+const CACHE_PREFIX="fm_cache_v15_";
 const PERSISTENT_FRIENDS_PREFIX="fm_friend_registry_v1_";
 const PERSISTENT_ROOMS_PREFIX="fm_chat_rooms_registry_v1_";
 let friendsSyncReady=false,groupsSyncReady=false,messagesSyncReady=false;
@@ -843,7 +849,11 @@ function startListeners(){
       if(!raw||!isRelevantMessageForMe(raw))return;
       const previous=messageMap.get(String(snap.key||""));
       const m=normalizeLocalMessage({id:snap.key,...raw});
-      if(previous?.createdAtMs)m.createdAtMs=Number(previous.createdAtMs);
+      // Keep a local timestamp only while the server record has not yet acquired
+      // its persisted createdAt. Once createdAt exists, it is authoritative.
+      if(!canonicalMessageTime(raw?.createdAt) && previous?.createdAtMs){
+        m.createdAtMs=Number(previous.createdAtMs);
+      }
       messageMap.set(m.id,m);
       cacheMessages();
       renderChats();
@@ -910,7 +920,18 @@ function startListeners(){
       }
       if(mSnap.status==="fulfilled") {
         const mine=mSnap.value.docs.map(d=>normalizeLocalMessage({id:d.id,...d.data()})).filter(isRelevantMessageForMe);
-        if(mine.length || messageMap.size===0) messageMap=new Map(mine.map(m=>[m.id,m]));
+        // Never replace a live map with a potentially older one-shot snapshot.
+        // Merge instead, preserving optimistic/realtime messages already received.
+        const merged=new Map(messageMap);
+        mine.forEach(m=>{
+          const existing=merged.get(m.id);
+          if(!existing || !existing.localPending) merged.set(m.id,m);
+        });
+        messageMap=merged;
+        mine.forEach(m=>{
+          const existing=activeMessageMap.get(m.id);
+          if(existing && !existing.localPending) activeMessageMap.set(m.id,m);
+        });
       }
       saveLocal("users",users); saveLocal("friends",friends); saveLocal("requests",requests);
       saveLocal("sentRequests",sentRequests); saveLocal("groups",groups); cacheMessages();
@@ -1503,18 +1524,33 @@ function reactionBarHTML(m){
 }
 async function setMessageReaction(messageId,emoji){
   if(!me||!messageId||!emoji)return;
-  const m=activeMessageMap.get(messageId)||messageMap.get(messageId); if(!m)return;
-  if(m.senderUid!==me.uid && !m.receiverUid && !m.groupMemberMap?.[me.uid] && !activeFriend?.isGroup)return toast("এই message-এ reaction দেওয়ার অনুমতি নেই");
-  const reactions=normalizeReactions(m.reactions);
-  if(reactions[me.uid]===emoji)delete reactions[me.uid];else reactions[me.uid]=emoji;
+  const m=activeMessageMap.get(messageId)||messageMap.get(messageId);
+  if(!m)return;
+  if(m.senderUid!==me.uid && !m.receiverUid && !m.groupMemberMap?.[me.uid] && !activeFriend?.isGroup){
+    return toast("এই message-এ reaction দেওয়ার অনুমতি নেই");
+  }
   try{
-    await MESSAGES().doc(messageId).update({reactions});
-    const persistedTime=Number(m.createdAtMs)||canonicalMessageTime(m.createdAt)||Number(m.timestamp)||0;
-    m.reactions=reactions;
-    if(persistedTime)m.createdAtMs=persistedTime;
-    activeMessageMap.set(messageId,m);messageMap.set(messageId,m);cacheMessages();renderMessages();renderChats();updateChatUnreadBadge();
-  }catch(e){console.error("setMessageReaction",e);toast(e?.code==="permission-denied"?"Reaction দেওয়ার permission নেই":"Reaction দেওয়া যায়নি")}
+    const reactionRef=db.ref(`messages/${messageId}/reactions`);
+    const tx=await reactionRef.transaction(current=>{
+      const next=(current&&typeof current==='object'&&!Array.isArray(current))?{...current}:{};
+      if(next[me.uid]===emoji)delete next[me.uid];
+      else next[me.uid]=emoji;
+      return Object.keys(next).length?next:null;
+    });
+    const reactions=normalizeReactions(tx?.snapshot?.val());
+    const local={...m,reactions};
+    activeMessageMap.set(messageId,local);
+    messageMap.set(messageId,local);
+    cacheMessages();
+    renderMessages();
+    renderChats();
+    updateChatUnreadBadge();
+  }catch(e){
+    console.error("setMessageReaction",e);
+    toast(e?.code==="PERMISSION_DENIED"||e?.code==="permission-denied"?"Reaction দেওয়ার permission নেই":"Reaction দেওয়া যায়নি");
+  }
 }
+
 function hideReactionBars(){document.querySelectorAll(".reaction-bar.is-open").forEach(x=>x.classList.remove("is-open"));}
 function openReactionBar(row){
   if(!row)return;hideReactionBars();const bar=row.querySelector(".reaction-bar");if(bar){bar.classList.add("is-open");requestAnimationFrame(()=>bar.querySelector(".reaction-emoji")?.focus({preventScroll:true}))}
@@ -1555,7 +1591,7 @@ function messageHTML(m){
         : `<img class="msg-img" data-image-url="${esc(u)}" src="${esc(fmImageObjectUrls.get(u)||u)}" loading="eager" decoding="async" onclick="event.stopPropagation();showImage('${esc(u)}')">`;
     }).join("")}
     ${uniqueFiles.map(f=>`<a class="file-card" href="${esc(f.downloadPage)}" target="_blank" rel="noopener"><span class="file-icon"><i class="fa-solid fa-file-arrow-down"></i></span><span class="file-copy"><b>${esc(f.name||"Shared file")}</b><small>${esc(f.size?bytes(f.size):"File")}</small></span><i class="fa-solid fa-arrow-up-right-from-square file-download"></i></a>`).join("")}
-    ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(messageTimeValue(m))}</div><div class="msg-actions"><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button>${delBtn}</div></div>
+    ${reactionOverlayHTML(m)}<div class="msg-footer"><div class="msg-time">${time(messageTimeValue(m))}</div><div class="msg-actions"><button class="msg-reaction-quick ${m.reactions?.[me?.uid]==='❤️'?'active':''}" type="button" title="❤️ Reaction" aria-label="❤️ Reaction" onclick="event.stopPropagation();setMessageReaction('${esc(m.id||"")}','❤️')"><i class="fa-solid fa-heart"></i></button><button class="msg-reply-btn" type="button" title="Reply" onclick="event.stopPropagation();startReply('${esc(m.id||"")}')"><i class="fa-solid fa-reply"></i></button>${delBtn}</div></div>
   </div></div>`;
 }
 async function deleteMessage(id){
