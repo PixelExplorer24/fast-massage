@@ -412,5 +412,6 @@ body.dark .message-date-separator span{background:rgba(15,23,42,.86)}
 .messages{overflow-anchor:none !important;scroll-behavior:auto !important;}
 .msg-row{position:relative;contain:layout paint;}
 .msg-time{white-space:nowrap;font-variant-numeric:tabular-nums;}
-.chat-item.unread-chat{background:rgba(86,166,255,.16);border-color:rgba(37,126,220,.30);}
+.chat-item.unread-chat{background:#eef2f6 !important;border-color:#cbd5e1 !important;box-shadow:inset 4px 0 0 #64748b,0 2px 10px rgba(15,23,42,.05) !important;}
+body.dark .chat-item.unread-chat{background:#1b2432 !important;border-color:#334155 !important;box-shadow:inset 4px 0 0 #94a3b8,0 2px 10px rgba(0,0,0,.18) !important;}
 .chat-item .unread-badge{flex:0 0 auto;min-width:22px;height:22px;padding:0 7px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:#2196f3;color:#fff;font-size:10px;font-weight:800;line-height:1;}
