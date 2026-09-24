@@ -407,3 +407,10 @@ body.dark .chat-panel .messages{background:var(--bg)}
 .message-date-separator::before,.message-date-separator::after{content:"";height:1px;background:var(--line);flex:1;max-width:110px}
 .message-date-separator span{font-size:9px;font-weight:800;letter-spacing:.04em;color:var(--muted);background:rgba(255,255,255,.86);border:1px solid var(--line);border-radius:999px;padding:5px 10px;backdrop-filter:blur(8px);white-space:nowrap}
 body.dark .message-date-separator span{background:rgba(15,23,42,.86)}
+
+/* Realtime chat stability: message order is data-driven, never animation-driven. */
+.messages{overflow-anchor:none !important;scroll-behavior:auto !important;}
+.msg-row{position:relative;contain:layout paint;}
+.msg-time{white-space:nowrap;font-variant-numeric:tabular-nums;}
+.chat-item.unread-chat{background:rgba(86,166,255,.16);border-color:rgba(37,126,220,.30);}
+.chat-item .unread-badge{flex:0 0 auto;min-width:22px;height:22px;padding:0 7px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:#2196f3;color:#fff;font-size:10px;font-weight:800;line-height:1;}
