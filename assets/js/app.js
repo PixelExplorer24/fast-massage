@@ -527,7 +527,18 @@ function watchActiveCall(){
 const $=id=>document.getElementById(id),esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 const avatar=u=>u?.photoURL||"https://placehold.co/120x120/e5e7eb/64748b?text=U";
 const pair=(a,b)=>[a,b].sort().join("__");
-const time=v=>{let n=v?.toMillis?v.toMillis():Number(v||0);if(!n)return"now";let d=new Date(n),now=new Date();if(d.toDateString()===now.toDateString())return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});return d.toLocaleDateString([],{day:"2-digit",month:"short"});};
+const time=v=>{let n=v?.toMillis?v.toMillis():Number(v||0);if(!n)return"now";let d=new Date(n);return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});};
+function messageDayKey(v){const n=v?.toMillis?v.toMillis():Number(v||0);if(!n)return"unknown";const d=new Date(n);return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;}
+function messageDayLabel(v){const n=v?.toMillis?v.toMillis():Number(v||0);if(!n)return"Unknown date";const d=new Date(n),now=new Date();
+  const start=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  const day=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  const diff=Math.round((start-day)/86400000);
+  if(diff===0)return"Today";
+  if(diff===1)return"Yesterday";
+  if(diff>=2&&diff<7)return d.toLocaleDateString([], {weekday:"long"});
+  return d.toLocaleDateString([], {day:"2-digit",month:"short",year:d.getFullYear()!==now.getFullYear()?"numeric":undefined});
+}
+function messageDateSeparator(v){return `<div class="message-date-separator"><span>${esc(messageDayLabel(v))}</span></div>`;}
 const bytes=n=>{if(!n)return"0 B";const u=["B","KB","MB","GB"];let i=Math.floor(Math.log(n)/Math.log(1024));return`${(n/Math.pow(1024,i)).toFixed(i?1:0)} ${u[i]}`};
 function toast(t){const e=$("toast");e.textContent=t;e.classList.add("show");clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove("show"),2400)}
 function isFriend(uid){return friends.some(f=>f.friendUid===uid)}
@@ -1462,8 +1473,12 @@ function renderMessages(){
   const escUrl=u=>esc(u||"");
   const oldHeight=box.scrollHeight,oldTop=box.scrollTop;
   const wasAtBottom=(oldHeight-box.clientHeight-oldTop)<72 || oldHeight===0;
+  let previousDay="";
   box.innerHTML=arr.length?arr.map(m=>{
-    if(m.type==="call")return `<div class="msg-row ${m.senderUid===me.uid?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
+    const day=messageDayKey(m.createdAt||m.createdAtMs);
+    const separator=day!==previousDay?(previousDay="",messageDateSeparator(m.createdAt||m.createdAtMs)):("");
+    previousDay=day;
+    if(m.type==="call")return `${separator}<div class="msg-row ${m.senderUid===me.uid?"mine":"theirs"} call-row" data-message-id="${esc(m.id||"")}"><div class="bubble call-bubble ${m.callOutcome==="missed"||m.callOutcome==="rejected"?"missed":""}"><div class="call-event">${callEventLabel(m)}</div><div class="msg-time">${time(m.createdAt||m.createdAtMs)}</div></div></div>`;
     const mine=m.senderUid===me.uid,imgs=m.imageUrls||[];
     const legacyFile=m.fileUrl?[{downloadPage:m.fileUrl,id:m.fileId,name:m.fileName,size:m.fileSize,mimetype:m.fileMime}]:[];
     const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
@@ -1850,7 +1865,13 @@ function renderMessagesFromPlain(items,options={}){
     box.innerHTML='<div class="empty-state"><i class="fa-regular fa-comments"></i><b>No messages yet</b><span>Start the conversation.</span></div>';
     return;
   }
-  box.innerHTML=items.map(m=>messageHTML(m)).join("");
+  let previousDay="";
+  box.innerHTML=items.map(m=>{
+    const day=messageDayKey(m.createdAt||m.createdAtMs);
+    const separator=day!==previousDay?messageDateSeparator(m.createdAt||m.createdAtMs):"";
+    previousDay=day;
+    return separator+messageHTML(m);
+  }).join("");
   if(shouldStickBottom)box.scrollTop=box.scrollHeight;
 }
 async function loadOlderLocalMessages(){
@@ -1868,12 +1889,11 @@ async function loadOlderLocalMessages(){
     older=older.map(m=>({...m,fmPrefetched:!!m.fmPrefetched}));
     const existing=new Set([...activeMessageMap.keys()]);
     older.forEach(m=>{activeMessageMap.set(m.id,m);messageMap.set(m.id,m)});
-    const html=older.filter(m=>!existing.has(m.id)).map(m=>messageHTML(m)).join("");
-    if(html){
-      box.insertAdjacentHTML("afterbegin",html);
+    if(older.length){
+      // Re-render the complete timeline so date separators stay unique and correctly ordered.
+      renderMessages();
       oldestLoadedCreatedAt=older[0].createdAtMs;
       historyPage++;
-      // Preserve the exact visual anchor: adding content above must not move the user's viewport.
       const delta=box.scrollHeight-oldHeight;
       box.scrollTop=oldTop+delta;
     }
