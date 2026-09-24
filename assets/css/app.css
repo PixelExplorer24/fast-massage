@@ -401,3 +401,9 @@ body.dark .chat-panel .messages{background:var(--bg)}
 @media(max-width:700px){
   .fm-panzoom-wrap img{max-width:96vw;max-height:88vh;}
 }
+
+/* Message timeline date separators */
+.message-date-separator{display:flex;align-items:center;justify-content:center;gap:10px;margin:18px 0 10px;clear:both;position:relative;z-index:1}
+.message-date-separator::before,.message-date-separator::after{content:"";height:1px;background:var(--line);flex:1;max-width:110px}
+.message-date-separator span{font-size:9px;font-weight:800;letter-spacing:.04em;color:var(--muted);background:rgba(255,255,255,.86);border:1px solid var(--line);border-radius:999px;padding:5px 10px;backdrop-filter:blur(8px);white-space:nowrap}
+body.dark .message-date-separator span{background:rgba(15,23,42,.86)}
