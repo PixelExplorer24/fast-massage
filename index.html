@@ -2,8 +2,13 @@
 <html lang="bn">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1.0,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#0b1220">
+<script>
+// Runtime environment detection: true when the app is running inside a native WebView.
+window.isWebView = /WebView|; wv\)|\bwv\b/i.test(navigator.userAgent || "") ||
+  (/Android/i.test(navigator.userAgent || "") && /Version\/4\.0/i.test(navigator.userAgent || ""));
+</script>
 <link rel="icon" type="image/webp" href="./assets/logo.webp">
 <script src="https://cdn.jsdelivr.net/npm/@panzoom/panzoom@4.6.2/dist/panzoom.min.js" crossorigin="anonymous"></script>
 <link rel="apple-touch-icon" href="./assets/logo.webp">

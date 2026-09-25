@@ -6,7 +6,12 @@
       "$uid": {
         ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid",
-        ".validate": "!newData.exists() || newData.child('uid').val() === $uid"
+        ".validate": "!newData.exists() || newData.child('uid').val() === $uid",
+        "expoPushToken": {
+          ".read": "auth != null && auth.uid === $uid",
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "!newData.exists() || newData.isString()"
+        }
       },
       ".read": "auth != null"
     },
@@ -46,7 +51,7 @@
       "$callId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('callerUid').val() === auth.uid || newData.child('receiverUid').val() === auth.uid || newData.child('recipientMap').child(auth.uid).val() === true || data.child('callerUid').val() === auth.uid || data.child('receiverUid').val() === auth.uid || data.child('recipientMap').child(auth.uid).val() === true)",
-        ".validate": "!newData.exists() || (newData.child('callerUid').isString() && newData.child('status').isString())"
+        ".validate": "!newData.exists() || (newData.child('callerUid').isString() && (newData.child('receiverUid').isString() || newData.child('groupId').isString() || newData.child('recipientMap').exists()) && newData.child('status').isString() && (newData.child('status').val() === 'ringing' || newData.child('status').val() === 'calling' || newData.child('status').val() === 'accepted' || newData.child('status').val() === 'rejected' || newData.child('status').val() === 'ended'))"
       },
       ".read": "auth != null"
     },

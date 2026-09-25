@@ -2,6 +2,23 @@ const CACHE="fast-messenger-shell-v23";
 const RUNTIME="fast-messenger-runtime-v23";
 const SHELL=["./","./index.html","./assets/js/app.js","./assets/theme-background.webp","./assets/logo.webp"];
 
+// Expo/React-Native WebView detection. A native WebView should not also
+// display the web push notification, otherwise the user can receive
+// duplicate notifications (native + web).
+function isNativeWebView(){
+  const ua=String(self.navigator?.userAgent||"");
+  return /;\s*wv\)|\bwv\b|ReactNative|Expo/i.test(ua) ||
+    (/iPhone|iPad|iPod/i.test(ua) && !/Safari/i.test(ua));
+}
+
+// If a push handler is present (for example from a messaging integration),
+// prevent it from displaying a web notification inside the native WebView.
+// In a normal browser this listener is intentionally a no-op.
+self.addEventListener("push",e=>{
+  if(!isNativeWebView())return;
+  e.stopImmediatePropagation();
+});
+
 self.addEventListener("install",e=>e.waitUntil(
   caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting())
 ));
