@@ -13,6 +13,46 @@ firebase.initializeApp(firebaseConfig);
 const auth=firebase.auth(),db=firebase.database(),APP="fast-massage-3ac80";
 
 // -----------------------------------------------------------------------------
+// Expo Push Token bridge
+// React Native (Expo) WebView can call window.saveExpoTokenToFirebase(token)
+// to save the currently authenticated user's Expo Push Token in RTDB.
+// -----------------------------------------------------------------------------
+window.saveExpoTokenToFirebase=async function(token){
+  const currentUser=auth.currentUser;
+  if(!currentUser?.uid)throw new Error("No authenticated Firebase user found");
+  if(typeof token!=="string"||!token.trim())throw new Error("Invalid Expo Push Token");
+  await db.ref(`users/${currentUser.uid}/pushToken`).set(token.trim());
+  return true;
+};
+
+// Send an incoming-call push notification through Expo Push Service.
+async function sendPushNotification(receiverId,callerName){
+  if(!receiverId)return false;
+  const tokenSnap=await db.ref(`users/${receiverId}/pushToken`).once("value");
+  const token=tokenSnap.val();
+  if(typeof token!=="string"||!token.trim())return false;
+
+  const response=await fetch("https://exp.host/--/api/v2/push/send",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      to:token.trim(),
+      title:"Incoming Call 📞",
+      body:`${callerName||"Someone"} আপনাকে কল করছে...`,
+      data:{type:"incoming_call",caller:callerName||"Someone"}
+    })
+  });
+
+  if(!response.ok){
+    const errorText=await response.text().catch(()=>"");
+    throw new Error(`Expo push request failed (${response.status})${errorText?`: ${errorText}`:""}`);
+  }
+  return response.json().catch(()=>true);
+}
+
+window.sendPushNotification=sendPushNotification;
+
+// -----------------------------------------------------------------------------
 // Firestore-shaped compatibility layer backed entirely by Firebase Realtime DB.
 // The UI/business logic below can keep its existing collection/doc/query calls,
 // while every read/write is actually performed through Realtime Database.
@@ -387,6 +427,14 @@ async function launchCall(mode){
   const ref=CALLS().doc(callId);
   const payload={callId,callerUid:me.uid,callerName:profile?.displayName||me.displayName||"User",callerPhoto:profile?.photoURL||me.photoURL||null,mode,channel,groupId:activeFriend.isGroup?activeFriend.uid:null,memberUids:activeFriend.isGroup?(activeFriend.memberUids||[]):[],recipientUids:participants,recipientMap:Object.fromEntries(participants.map(x=>[String(x),true])),status:"ringing",createdAt:firebase.firestore.FieldValue.serverTimestamp()};
   await ref.set(payload);
+  // Send Expo push notifications only after the call request is successfully
+  // written to Firebase. For group calls, notify every recipient.
+  await Promise.all(participants.map(receiverId=>
+    sendPushNotification(receiverId,payload.callerName).catch(err=>{
+      console.warn("sendPushNotification:",err);
+      return false;
+    })
+  ));
   activeCall={callId,mode,channel,ref,caller:true,groupId:activeFriend.isGroup?activeFriend.uid:null};watchActiveCall();
   $("callHeaderName").textContent=activeFriend.isGroup?`${activeFriend.name||"Group"} · Group call`:activeFriend.displayName||"Call";
   $("callHeaderAvatar").src=avatar(activeFriend);callUi(true);updateCallParticipants();setCallStatus("Connecting…");
