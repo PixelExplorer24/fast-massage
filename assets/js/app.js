@@ -504,6 +504,49 @@ async function openAudioOutputMenu(){
 
 async function toggleMute(){if(!localMicTrack)return;const muted=localMicTrack.muted;await localMicTrack.setMuted(!muted);$("muteCallBtn").classList.toggle("active",muted);$("muteCallBtn").innerHTML=muted?'<i class="fa-solid fa-microphone-slash"></i><span>Unmute</span>':'<i class="fa-solid fa-microphone"></i><span>Mute</span>'}
 async function toggleCamera(){if(!localCamTrack)return;const muted=localCamTrack.muted;await localCamTrack.setMuted(!muted);$("cameraCallBtn").classList.toggle("active",muted);$("cameraCallBtn").innerHTML=muted?'<i class="fa-solid fa-video-slash"></i><span>Camera off</span>':'<i class="fa-solid fa-video"></i><span>Camera</span>'}
+function postIncomingCallToNative(call){
+  // Send incoming-call data to the native React Native WebView layer when available.
+  // The web app remains fully functional in a normal browser because this is guarded.
+  try{
+    const bridge=window.ReactNativeWebView;
+    if(bridge && typeof bridge.postMessage==="function"){
+      bridge.postMessage(JSON.stringify({
+        type:"INCOMING_CALL",
+        callId:call.callId||call.id,
+        callerUid:call.callerUid||null,
+        callerName:call.callerName||"Incoming call",
+        callerPhoto:call.callerPhoto||null,
+        mode:call.mode||"audio",
+        channel:call.channel||null,
+        groupId:call.groupId||null,
+        createdAt:call.createdAt||Date.now()
+      }));
+    }
+  }catch(e){console.warn("native incoming-call bridge",e)}
+}
+
+function handleNativeCallMessage(event){
+  try{
+    let data=event?.data;
+    if(typeof data==="string"){
+      try{data=JSON.parse(data)}catch(_){}
+    }
+    if(!data||typeof data!=="object")return;
+    const type=String(data.type||data.event||"").toUpperCase();
+    const action=String(data.action||data.response||data.callAction||"").toLowerCase();
+    const isCallAction=type==="CALL_ACTION"||type==="CALL_RESPONSE"||type==="INCOMING_CALL_ACTION"||type==="CALL_EVENT";
+    const accepted=(isCallAction&&(action==="accept"||action==="accepted"||action==="answer"||action==="receive"))||type==="CALL_ACCEPT";
+    const declined=(isCallAction&&(action==="decline"||action==="declined"||action==="reject"||action==="rejected"))||type==="CALL_REJECT"||type==="CALL_DECLINE";
+    if(!accepted&&!declined)return;
+    const targetId=String(data.callId||data.id||"");
+    if(targetId && incomingCall?.callId && targetId!==String(incomingCall.callId))return;
+    if(accepted)acceptCall();
+    else rejectIncomingCall();
+  }catch(e){console.warn("native call message",e)}
+}
+
+window.addEventListener("message",handleNativeCallMessage);
+
 function watchCallInvites(){
   if(!me)return;
   if(callInviteUnsub)callInviteUnsub();
@@ -512,7 +555,7 @@ function watchCallInvites(){
       const c={id:ch.doc.id,...ch.doc.data()};
       if(c.callerUid===me.uid || c.status!=="ringing")return;
       if(activeCall || incomingCall?.callId===c.callId)return;
-      incomingCall=c;$("incomingCallAvatar").src=c.callerPhoto||avatar(users.find(u=>u.uid===c.callerUid));$("incomingCallName").textContent=c.callerName||"Incoming call";$("incomingCallType").textContent=c.mode==="video"?"ভিডিও কল":"অডিও কল";$("callInviteModal").classList.remove("hidden");
+      incomingCall=c;$("incomingCallAvatar").src=c.callerPhoto||avatar(users.find(u=>u.uid===c.callerUid));$("incomingCallName").textContent=c.callerName||"Incoming call";$("incomingCallType").textContent=c.mode==="video"?"ভিডিও কল":"অডিও কল";$("callInviteModal").classList.remove("hidden");postIncomingCallToNative(c);
     });
   },e=>console.warn("call invite listener",e));
 }
