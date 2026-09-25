@@ -1,8 +1,10 @@
 :root{--bg:#f4f7fb;--surface:#fff;--surface2:#f7f9fc;--text:#0f172a;--muted:#64748b;--line:#e5eaf1;--primary:#2563eb;--primary2:#7c3aed;--danger:#dc2626;--green:#22c55e;--shadow:0 12px 40px rgba(15,23,42,.08)}
-*{box-sizing:border-box}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
 /* ===== Full-screen theme canvas + safe-area header ===== */
 html,body{background-image:var(--messenger-theme-bg)!important;background-size:cover!important;background-position:center center!important;background-repeat:no-repeat!important;background-attachment:fixed!important}
 .topbar{background:transparent!important;border:0!important;box-shadow:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+.topbar::before{content:"";position:absolute;inset:0 0 auto 0;height:env(safe-area-inset-top);background:transparent!important;border:0!important;box-shadow:none!important;pointer-events:none}
+.topbar,.topbar-inner{border-top:0!important;border-bottom:0!important;box-shadow:none!important}
 .topbar-inner{background:transparent!important}
 @media(max-width:700px){
   html,body{background-position:center top!important;background-attachment:scroll!important}
