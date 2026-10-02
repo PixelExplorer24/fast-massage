@@ -450,3 +450,20 @@ body.dark .chat-item.unread-chat{background:#1b2432 !important;border-color:#334
 .call-overlay:fullscreen{background:#000}
 @media(max-width:600px){.local-video-wrap{width:112px;height:158px;max-width:32vw}.call-header{padding-top:calc(10px + env(safe-area-inset-top));}.call-controls{gap:7px}.call-control{width:58px;height:58px}}
 @media(orientation:landscape) and (max-height:600px){.call-header{padding-top:8px}.call-controls{min-height:82px}.local-video-wrap{width:120px;height:90px;right:12px;top:64px}}
+
+/* ===== v26 true fullscreen video stage / realtime hangup UI ===== */
+.call-shell{position:relative;overflow:hidden;background:#000!important}
+.call-overlay.call-entering .call-shell{filter:none}
+.remote-videos{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;display:grid!important;grid-template-columns:1fr!important;grid-template-rows:1fr!important;gap:0!important;padding:0!important;align-content:stretch!important;overflow:hidden!important;background:#000!important;z-index:1}
+.remote-video{width:100%!important;height:100%!important;min-height:0!important;border-radius:0!important;background:#000!important;box-shadow:none!important;transform:none!important}
+.remote-video>div,.remote-video>div[id$="_view"]{width:100%!important;height:100%!important;min-height:0!important}
+.remote-video>div[id$="_view"] video{display:block!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:cover!important;object-position:center center!important;filter:none!important;transform:none!important}
+.remote-video.pinned{grid-column:1!important;min-height:0!important}
+.call-header,.call-controls,.local-video-wrap,.call-empty,.audio-output-menu,.call-participants-panel{z-index:10}
+.call-header{position:relative;background:linear-gradient(to bottom,rgba(0,0,0,.48),transparent)!important;backdrop-filter:none!important}
+.call-controls{position:relative;margin-top:auto;background:linear-gradient(transparent,rgba(0,0,0,.78) 42%)!important}
+.local-video-wrap{position:absolute!important;right:14px!important;top:82px!important;width:132px!important;height:176px!important;z-index:15!important}
+.call-overlay:fullscreen,.call-overlay:fullscreen .call-shell{width:100vw!important;height:100vh!important}
+.call-overlay:fullscreen .remote-videos{inset:0!important}
+@media(max-width:600px){.local-video-wrap{width:104px!important;height:148px!important;right:10px!important;top:72px!important}.call-header{padding-top:calc(10px + env(safe-area-inset-top))!important}.call-controls{padding-bottom:calc(14px + env(safe-area-inset-bottom))!important}}
+@media(orientation:landscape) and (max-height:600px){.local-video-wrap{width:126px!important;height:94px!important;right:10px!important;top:60px!important}}
