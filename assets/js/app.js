@@ -21,15 +21,17 @@ window.saveExpoTokenToFirebase=async function(token){
   const currentUser=auth.currentUser;
   if(!currentUser?.uid)throw new Error("No authenticated Firebase user found");
   if(typeof token!=="string"||!token.trim())throw new Error("Invalid Expo Push Token");
-  await db.ref(`users/${currentUser.uid}/pushToken`).set(token.trim());
+  const cleanToken=token.trim();
+  await db.ref(`users/${currentUser.uid}`).update({pushToken:cleanToken,expoPushToken:cleanToken});
   return true;
 };
 
 // Send an incoming-call push notification through Expo Push Service.
 async function sendPushNotification(receiverId,callerName){
   if(!receiverId)return false;
-  const tokenSnap=await db.ref(`users/${receiverId}/pushToken`).once("value");
-  const token=tokenSnap.val();
+  const userSnap=await db.ref(`users/${receiverId}`).once("value");
+  const userData=userSnap.val()||{};
+  const token=userData.pushToken||userData.expoPushToken;
   if(typeof token!=="string"||!token.trim())return false;
 
   const response=await fetch("https://exp.host/--/api/v2/push/send",{
@@ -132,7 +134,7 @@ class RTCollection{
   add(data){const key=db.ref(this.path).push().key;const ref=new RTDoc(`${this.path}/${key}`,key);return ref.set(data).then(()=>ref)}
   where(field,op,value){const q=new RTQuery(this.path,this.filters);return q.where(field,op,value)}
   async get(){return new RTQuery(this.path,[]).get()}
-  onSnapshot(cb,err){return new RTQuery(this.path,[]).onSnapshot(cb,err)}
+  onSnapshot(cb,err){return new RTQuery(this.path,this.filters).onSnapshot(cb,err)}
 }
 class RTQuery{
   constructor(path,filters=[]){this.path=path;this.filters=[...filters]}
@@ -597,15 +599,26 @@ window.addEventListener("message",handleNativeCallMessage);
 
 function watchCallInvites(){
   if(!me)return;
-  if(callInviteUnsub)callInviteUnsub();
-  callInviteUnsub=CALLS().where("recipientUids","array-contains",me.uid).onSnapshot(s=>{
-    s.docChanges().filter(c=>c.type==="added"||c.type==="modified").forEach(ch=>{
-      const c={id:ch.doc.id,...ch.doc.data()};
-      if(c.callerUid===me.uid || c.status!=="ringing")return;
-      if(activeCall || incomingCall?.callId===c.callId)return;
-      incomingCall=c;$("incomingCallAvatar").src=c.callerPhoto||avatar(users.find(u=>u.uid===c.callerUid));$("incomingCallName").textContent=c.callerName||"Incoming call";$("incomingCallType").textContent=c.mode==="video"?"ভিডিও কল":"অডিও কল";$("callInviteModal").classList.remove("hidden");postIncomingCallToNative(c);
-    });
-  },e=>console.warn("call invite listener",e));
+  if(callInviteUnsub){try{callInviteUnsub()}catch(_){} callInviteUnsub=null;}
+  const ref=db.ref("calls");
+  const handle=snap=>{
+    const c=snap.val();
+    if(!c||c.callerUid===me.uid||c.status!=="ringing")return;
+    const recipients=Array.isArray(c.recipientUids)?c.recipientUids.map(String):[];
+    const recipientMap=c.recipientMap&&typeof c.recipientMap==="object"?c.recipientMap:{};
+    if(!recipients.includes(String(me.uid))&&recipientMap[String(me.uid)]!==true)return;
+    if(activeCall||incomingCall?.callId===c.callId)return;
+    incomingCall={id:snap.key,...c};
+    $("incomingCallAvatar").src=c.callerPhoto||avatar(users.find(u=>String(u.uid)===String(c.callerUid)));
+    $("incomingCallName").textContent=c.callerName||"Incoming call";
+    $("incomingCallType").textContent=c.mode==="video"?"ভিডিও কল":"অডিও কল";
+    $("callInviteModal").classList.remove("hidden");
+    postIncomingCallToNative(incomingCall);
+  };
+  const onAdded=s=>handle(s),onChanged=s=>handle(s);
+  ref.on("child_added",onAdded,e=>console.warn("call child_added listener",e));
+  ref.on("child_changed",onChanged,e=>console.warn("call child_changed listener",e));
+  callInviteUnsub=()=>{ref.off("child_added",onAdded);ref.off("child_changed",onChanged)};
 }
 function watchActiveCall(){
   if(callUnsub)callUnsub();
@@ -1477,7 +1490,24 @@ async function createGroup(){
     btn.disabled=false;
   }
 }
-function renderPeople(){const q=($("peopleSearch")?.value||"").trim().toLowerCase();let rows=peopleTab==="friends"?friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User"}):peopleTab==="requests"?requests.map(r=>users.find(u=>u.uid===r.senderUid)||{uid:r.senderUid,displayName:"User"}):users;if(q)rows=rows.filter(u=>(u.displayName||"").toLowerCase().includes(q)||(u.email||"").toLowerCase().includes(q));const box=$("peopleList");box.innerHTML=rows.length?rows.map(u=>{const pending=requests.find(r=>r.senderUid===u.uid),sent=sentRequests.find(r=>r.receiverUid===u.uid),f=isFriend(u.uid);let actions=f?`<button class="small-btn primary" onclick="openChat('${u.uid}')">Message</button>`:(pending||sent)?`<button class="small-btn" disabled>Pending</button>`:`<button class="small-btn primary" onclick="sendRequest('${u.uid}')">Add friend</button>`;if(peopleTab==="requests"&&pending)actions=`<button class="small-btn primary" onclick="acceptRequest('${pending.id}','${u.uid}')">Accept</button><button class="small-btn danger" onclick="rejectRequest('${pending.id}')">Decline</button>`;return`<div class="person-item"><img class="avatar" src="${esc(avatar(u))}"><div class="item-copy" onclick="openUser('${u.uid}')"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></div><div class="person-actions">${actions}</div></div>`}).join(""):`<div class="empty">কোনো user পাওয়া যায়নি।</div>`}
+async function ensureUserProfileLoaded(uid){
+  const key=String(uid||"");
+  if(!key||key===String(me?.uid))return null;
+  const existing=users.find(u=>String(u.uid)===key);
+  if(existing)return existing;
+  try{
+    const snap=await USERS().doc(key).get();
+    if(!snap.exists)return null;
+    const u={uid:key,...(snap.data()||{})};
+    users=[...users.filter(x=>String(x.uid)!==key),u];
+    liveUserMap.set(key,u);
+    saveLocal("users",users);renderPeople();renderChats();
+    return u;
+  }catch(e){console.warn("ensureUserProfileLoaded",e);return null}
+}
+function renderPeople(){
+  const q=($("peopleSearch")?.value||"").trim().toLowerCase();
+  [...requests,...friends].map(x=>x?.senderUid||x?.friendUid).filter(Boolean).filter(uid=>!users.some(u=>String(u.uid)===String(uid))).slice(0,20).forEach(uid=>ensureUserProfileLoaded(uid));let rows=peopleTab==="friends"?friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User"}):peopleTab==="requests"?requests.map(r=>users.find(u=>u.uid===r.senderUid)||{uid:r.senderUid,displayName:"User"}):users;if(q)rows=rows.filter(u=>(u.displayName||"").toLowerCase().includes(q)||(u.email||"").toLowerCase().includes(q));const box=$("peopleList");box.innerHTML=rows.length?rows.map(u=>{const pending=requests.find(r=>r.senderUid===u.uid),sent=sentRequests.find(r=>r.receiverUid===u.uid),f=isFriend(u.uid);let actions=f?`<button class="small-btn primary" onclick="openChat('${u.uid}')">Message</button>`:(pending||sent)?`<button class="small-btn" disabled>Pending</button>`:`<button class="small-btn primary" onclick="sendRequest('${u.uid}')">Add friend</button>`;if(peopleTab==="requests"&&pending)actions=`<button class="small-btn primary" onclick="acceptRequest('${pending.id}','${u.uid}')">Accept</button><button class="small-btn danger" onclick="rejectRequest('${pending.id}')">Decline</button>`;return`<div class="person-item"><img class="avatar" src="${esc(avatar(u))}"><div class="item-copy" onclick="openUser('${u.uid}')"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></div><div class="person-actions">${actions}</div></div>`}).join(""):`<div class="empty">কোনো user পাওয়া যায়নি।</div>`}
 async function sendRequest(uid){
   if(!me||!uid||uid===me.uid)return;
   if(isFriend(uid))return toast("আপনারা ইতিমধ্যে বন্ধু");
@@ -2854,18 +2884,18 @@ let lastKnownIncoming=0;
 function watchIncomingNotifications(){
   if(!me)return;
   if(notificationUnsub){try{notificationUnsub()}catch(_){} notificationUnsub=null;}
-  notificationUnsub=MESSAGES().where("receiverUid","==",me.uid).onSnapshot(s=>{
-    const fresh=s.docChanges().filter(c=>c.type==="added").map(c=>c.doc.data()).filter(m=>Number(m.createdAt||0)>0);
-    if(!fresh.length)return;
-    const newest=Math.max(...fresh.map(m=>Number(m.createdAt||0)));
-    if(lastKnownIncoming && newest>lastKnownIncoming && (!activeFriend || fresh.some(m=>m.senderUid!==activeFriend.uid))){
-      playNotificationSound();
-      toast("নতুন message এসেছে");
+  const ref=db.ref("messages");
+  const handle=snap=>{
+    const m=snap.val();
+    if(!m||String(m.receiverUid)!==String(me.uid)||Number(m.createdAt||0)<=0)return;
+    if(!activeFriend||String(m.senderUid)!==String(activeFriend.uid)){
+      playNotificationSound();toast("নতুন message এসেছে");
     }
-    lastKnownIncoming=Math.max(lastKnownIncoming,newest);
-  },e=>console.warn("message notification listener",e));
+  };
+  const onAdded=s=>handle(s);
+  ref.on("child_added",onAdded,e=>console.warn("message notification listener",e));
+  notificationUnsub=()=>ref.off("child_added",onAdded);
 }
-
 $("audioCallBtn").onclick=()=>startCall("audio");
 $("videoCallBtn").onclick=()=>startCall("video");
 $("acceptCallBtn").onclick=acceptCall;
