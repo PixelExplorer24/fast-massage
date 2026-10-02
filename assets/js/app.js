@@ -491,14 +491,9 @@ async function launchCall(mode){
 
 }
 async function startCall(mode){
-  if(mode==="video"){
-    if(!me||!activeFriend)return;
-    if(!activeFriend.isGroup&&!isFriend(activeFriend.uid))return toast("আগে Friend Request গ্রহণ করতে হবে");
-    pendingVideoCall={mode};
-    $("cameraPreviewTargetName").textContent=activeFriend.isGroup?(activeFriend.name||"Group call"):(activeFriend.displayName||"Video call");
-    if(await openCameraPreview())return;
-    pendingVideoCall=null; return;
-  }
+  // Video calls now start immediately from the Video button. The old camera
+  // preview remains available in the codebase but is no longer inserted into
+  // the call flow, so the user goes directly to the live calling screen.
   return launchCall(mode);
 }
 
@@ -515,10 +510,19 @@ async function acceptCall(){
 }
 async function rejectIncomingCall(){const c=incomingCall;if(!c)return;$("callInviteModal").classList.add("hidden");incomingCall=null;try{const endedAt=Date.now();await CALLS().doc(c.callId).set({status:"rejected",rejectedBy:me.uid,rejectedAt:firebase.firestore.FieldValue.serverTimestamp(),endedAt},{merge:true});await saveCallToChat({...c,status:"rejected",endedAt},"rejected")}catch(_){}}
 async function endCall(silent=false){
-  // Close the local call UI immediately. Do not wait for Firebase/RTDB or Agora
-  // cleanup before hiding the overlay; otherwise the End button can appear dead
-  // on a slow connection.
+  // Publish the end-state FIRST. The other participant is listening to the
+  // same call document, so this makes the hang-up realtime on both ends.
   const c=activeCall;
+  const endedAt=Date.now();
+  if(c&&!silent){
+    // Do not block the End button on the network. Fire the realtime signal
+    // immediately and let Firebase deliver it while local cleanup continues.
+    c.ref.set({status:"ended",endedBy:me?.uid||null,endedAt,callOutcome:"ended"},{merge:true})
+      .catch(e=>console.warn("call end signal",e));
+  }
+
+  // Then tear down local Agora media/UI. Never leave the remote side waiting
+  // for local SDK cleanup to finish.
   activeCall=null;
   if(callUnsub){try{callUnsub()}catch(_){} callUnsub=null;}
   try{localMicTrack?.stop();localMicTrack?.close();localCamTrack?.stop();localCamTrack?.close()}catch(_){ }
@@ -529,16 +533,11 @@ async function endCall(silent=false){
   pinnedCallParticipant=null;mutedRemoteParticipants.clear();closeCallParticipants();cleanupCallUI();incomingCall=null;await exitCallFullscreen();
 
   if(c&&!silent){
-    const endedAt=Date.now();
-    // Persist the end event without blocking the UI.
-    (async()=>{
-      try{
-        const snap=await c.ref.get();
-        const current={...(snap.data()||{}),...c};
-        await c.ref.set({status:"ended",endedBy:me.uid,endedAt},{merge:true});
-        await saveCallToChat({...current,status:"ended",endedAt},"ended");
-      }catch(e){console.warn("endCall",e)}
-    })();
+    try{
+      const snap=await c.ref.get();
+      const current={...(snap.data()||{}),...c};
+      await saveCallToChat({...current,status:"ended",endedAt},"ended");
+    }catch(e){console.warn("endCall history",e)}
   }
 }
 
