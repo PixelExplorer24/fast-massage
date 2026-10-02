@@ -1,59 +1,48 @@
 {
   "rules": {
-    ".read": false,
+    ".read": "auth != null",
     ".write": false,
     "users": {
       "$uid": {
         ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid",
-        ".validate": "!newData.exists() || newData.child('uid').val() === $uid",
-        "expoPushToken": {
-          ".read": "auth != null && auth.uid === $uid",
-          ".write": "auth != null && auth.uid === $uid",
-          ".validate": "!newData.exists() || newData.isString()"
-        }
-      },
-      ".read": "auth != null"
+        ".validate": "!newData.exists() || newData.child('uid').val() === $uid"
+      }
     },
     "friends": {
       "$friendId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('ownerUid').val() === auth.uid || newData.child('friendUid').val() === auth.uid || data.child('ownerUid').val() === auth.uid || data.child('friendUid').val() === auth.uid)",
         ".validate": "!newData.exists() || (newData.child('ownerUid').isString() && newData.child('friendUid').isString() && newData.child('ownerUid').val() !== newData.child('friendUid').val())"
-      },
-      ".read": "auth != null"
+      }
     },
     "friendRequests": {
       "$requestId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('senderUid').val() === auth.uid || newData.child('receiverUid').val() === auth.uid || data.child('senderUid').val() === auth.uid || data.child('receiverUid').val() === auth.uid)",
         ".validate": "!newData.exists() || (newData.child('senderUid').isString() && newData.child('receiverUid').isString() && newData.child('senderUid').val() !== newData.child('receiverUid').val() && (newData.child('status').val() === 'pending' || newData.child('status').val() === 'accepted' || newData.child('status').val() === 'rejected'))"
-      },
-      ".read": "auth != null"
+      }
     },
     "groups": {
       "$groupId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('ownerUid').val() === auth.uid || data.child('ownerUid').val() === auth.uid)",
         ".validate": "!newData.exists() || (newData.child('ownerUid').isString() && newData.child('memberUids').exists())"
-      },
-      ".read": "auth != null"
+      }
     },
     "messages": {
       "$messageId": {
         ".read": "auth != null",
-        ".write": "auth != null && (newData.child('senderUid').val() === auth.uid || newData.child('receiverUid').val() === auth.uid || (newData.child('groupMemberMap').child(auth.uid).val() === true) || data.child('senderUid').val() === auth.uid || data.child('receiverUid').val() === auth.uid || (data.child('groupMemberMap').child(auth.uid).val() === true))",
+        ".write": "auth != null && ( (!newData.exists() && data.child('senderUid').val() === auth.uid) || (newData.exists() && (newData.child('senderUid').val() === auth.uid || newData.child('receiverUid').val() === auth.uid || newData.child('groupMemberMap').child(auth.uid).val() === true || data.child('senderUid').val() === auth.uid || data.child('receiverUid').val() === auth.uid || data.child('groupMemberMap').child(auth.uid).val() === true)) )",
         ".validate": "!newData.exists() || (newData.child('senderUid').isString() && newData.child('createdAt').isNumber())"
-      },
-      ".read": "auth != null"
+      }
     },
     "calls": {
       "$callId": {
         ".read": "auth != null",
         ".write": "auth != null && (newData.child('callerUid').val() === auth.uid || newData.child('receiverUid').val() === auth.uid || newData.child('recipientMap').child(auth.uid).val() === true || data.child('callerUid').val() === auth.uid || data.child('receiverUid').val() === auth.uid || data.child('recipientMap').child(auth.uid).val() === true)",
         ".validate": "!newData.exists() || (newData.child('callerUid').isString() && (newData.child('receiverUid').isString() || newData.child('groupId').isString() || newData.child('recipientMap').exists()) && newData.child('status').isString() && (newData.child('status').val() === 'ringing' || newData.child('status').val() === 'calling' || newData.child('status').val() === 'accepted' || newData.child('status').val() === 'rejected' || newData.child('status').val() === 'ended'))"
-      },
-      ".read": "auth != null"
+      }
     },
     "presence": {
       "$uid": {

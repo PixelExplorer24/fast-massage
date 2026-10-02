@@ -17,7 +17,7 @@ window.isWebView = /WebView|; wv\)|\bwv\b/i.test(navigator.userAgent || "") ||
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Bengali:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-<link rel="stylesheet" href="./assets/css/app.css?v=9">
+<link rel="stylesheet" href="./assets/css/app.css?v=10">
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
@@ -153,10 +153,10 @@ body.fm-viewer-open{overflow:hidden!important;overscroll-behavior:none;touch-act
     </section>
 
     <section id="peopleView" class="view">
-      <div class="hero-head"><div><h2>People</h2><p>বন্ধু খুঁজুন ও নতুন conversation শুরু করুন</p></div></div>
+      <div class="hero-head"><div><h2>People</h2><p>বন্ধু খুঁজুন, request পরিচালনা করুন ও সরাসরি message করুন</p></div></div>
       <div class="search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input id="peopleSearch" placeholder="নাম বা email দিয়ে খুঁজুন..."></div>
       <div class="people-tabs">
-        <button class="pill active" data-people-tab="friends">Friends</button>
+        <button class="pill active" data-people-tab="friends">Friends <span id="friendCountBadge" class="tab-count">0</span></button>
         <button class="pill" data-people-tab="requests">Requests <span id="requestBadge">0</span></button>
         <button class="pill" data-people-tab="all">Find people</button>
       </div>
@@ -204,7 +204,7 @@ body.fm-viewer-open{overflow:hidden!important;overscroll-behavior:none;touch-act
           <div id="accountManagementPanel" class="account-folder-panel hidden">
             <button class="settings-item danger-soft account-delete-item" id="deleteAccountBtn" type="button">
               <span class="settings-icon red"><i class="fa-solid fa-user-slash"></i></span>
-              <span class="settings-copy"><b>অ্যাকাউন্ট ডিলিট</b><small>আপনার অ্যাপের প্রোফাইল, বন্ধু, request ও message data মুছে ফেলুন</small></span>
+              <span class="settings-copy"><b>অ্যাকাউন্ট ডিলিট</b><small>এই অ্যাপের profile, friend, request, group ও message data স্থায়ীভাবে মুছে ফেলুন</small></span>
               <i class="fa-solid fa-chevron-right"></i>
             </button>
           </div>
@@ -428,7 +428,7 @@ body.fm-viewer-open{overflow:hidden!important;overscroll-behavior:none;touch-act
 </div></div>
 
 <div id="lightbox" class="lightbox hidden"><button id="closeLightbox"><i class="fa-solid fa-xmark"></i></button><img id="lightboxImg" alt=""></div>
-<script src="./assets/js/app.js?v=friendfix23"></script>
+<script src="./assets/js/app.js?v=friendfix24"></script>
 <script>
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
