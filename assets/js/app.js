@@ -173,7 +173,7 @@ const PERSISTENT_FRIENDS_PREFIX="fm_friend_registry_v1_";
 const PERSISTENT_ROOMS_PREFIX="fm_chat_rooms_registry_v1_";
 let friendsSyncReady=false,groupsSyncReady=false,messagesSyncReady=false;
 let authResolved=false;
-const AGORA_APP_ID="addaf4af54e845beb818de869a7de813";
+const AGORA_APP_ID="83291c0f69f64ba5a63c86e266c0b1c9";
 let agoraClient=null,localMicTrack=null,localCamTrack=null,activeCall=null,incomingCall=null,callUnsub=null,callInviteUnsub=null,notificationUnsub=null,remoteUsers=new Map();
 let callTimerInterval=null,callStartedAt=0,callRingTimer=null;
 const callEventLocks=new Set();
@@ -224,11 +224,34 @@ async function saveCallToChat(c,forcedStatus){
     await ref.set(payload,{merge:true});
   }catch(e){console.warn("saveCallToChat",e)}finally{callEventLocks.delete(key)}
 }
-const CALL_TOKEN=null; // Keep null when Agora App Certificate/token authentication is disabled.
+const CALL_TOKEN=null; // Use a server-issued token here when Agora App Certificate is enabled.
 function callChannel(id){return "fm_"+String(id).replace(/[^a-zA-Z0-9_-]/g,"").slice(0,55)}
 function callTarget(){return activeFriend?.isGroup?activeFriend.uid:activeFriend?.uid}
 function participantName(uid){if(String(uid)===String(me?.uid))return "You";const u=users.find(x=>String(x.uid)===String(uid));return u?.displayName||u?.email?.split("@")[0]||"Participant"}
 function setCallStatus(t){if($("callStatus"))$("callStatus").textContent=t}
+function postCallRouteToNative(route){
+  try{
+    const bridge=window.ReactNativeWebView;
+    if(bridge&&typeof bridge.postMessage==="function")bridge.postMessage(JSON.stringify({type:"CALL_AUDIO_ROUTE",route}));
+  }catch(e){console.warn("native audio route",e)}
+}
+async function enterCallFullscreen(){
+  const el=$("callOverlay");
+  try{
+    if(!el)return false;
+    if(document.fullscreenElement)return true;
+    if(el.requestFullscreen){await el.requestFullscreen({navigationUI:"hide"});return true}
+  }catch(e){console.warn("fullscreen",e)}
+  try{postCallRouteToNative("fullscreen")}catch(_){}
+  return false;
+}
+async function exitCallFullscreen(){
+  try{if(document.fullscreenElement&&document.exitFullscreen)await document.exitFullscreen()}catch(e){console.warn("exit fullscreen",e)}
+  try{postCallRouteToNative("normal")}catch(_){}
+}
+function preferredAudioRouteForMode(mode){
+  return mode==="video"?"speaker":"earpiece";
+}
 function formatCallDuration(ms){const total=Math.max(0,Math.floor(ms/1000));const h=Math.floor(total/3600),m=Math.floor((total%3600)/60),s=total%60;return h?`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`}
 function stopCallTimer(){
   if(callTimerInterval){clearInterval(callTimerInterval);callTimerInterval=null}
@@ -339,7 +362,10 @@ async function removeCallParticipant(uid){
   }catch(e){console.error(e);toast("Participant remove করা যায়নি")}
 }
 function closeCallParticipants(){ $("callParticipantsPanel")?.classList.add("hidden"); }
+function modeForActiveCall(){return activeCall?.mode||"audio"}
 async function setupAgora(mode,channel){
+  playbackMode=mode==="video"?"speaker":"earpiece";
+  selectedPlaybackDevice="default";
   if(!window.AgoraRTC)throw new Error("Agora SDK load হয়নি");
   if(!navigator.mediaDevices?.getUserMedia)throw new Error("এই ব্রাউজারে microphone/camera access নেই");
   if(agoraClient){try{agoraClient.removeAllListeners();await agoraClient.leave()}catch(_){} agoraClient=null}
@@ -349,7 +375,7 @@ async function setupAgora(mode,channel){
   const permissionStream=await navigator.mediaDevices.getUserMedia(mode==="video"?{audio:true,video:true}:{audio:true,video:false});
   permissionStream.getTracks().forEach(t=>t.stop());
 
-  agoraClient=AgoraRTC.createClient({mode:"rtc",codec:"vp8"});
+  agoraClient=AgoraRTC.createClient({mode:"rtc",codec:"vp8",role:"host"});
   agoraClient.on("user-published",async(user,mediaType)=>{
     try{
       await agoraClient.subscribe(user,mediaType);
@@ -359,6 +385,8 @@ async function setupAgora(mode,channel){
         if(user.audioTrack){
           await user.audioTrack.play().catch(err=>console.warn("Remote audio autoplay:",err));
           await applyPlaybackDevice(user.audioTrack);
+          if(modeForActiveCall()==="video")postCallRouteToNative("speaker");
+          else postCallRouteToNative(playbackMode);
         }
       }
       updateCallParticipants();
@@ -378,14 +406,14 @@ async function setupAgora(mode,channel){
   // If Agora App Certificate is enabled in the Agora project, CALL_TOKEN must
   // be replaced by a valid server-issued token. With certificate disabled, null
   // is correct for this client-only setup.
-  await agoraClient.join(AGORA_APP_ID,channel,CALL_TOKEN,me?.uid||null);
+  await agoraClient.join(AGORA_APP_ID,channel,CALL_TOKEN,me?.uid||null,{autoSubscribe:false,autoReceiveAndPlayAudio:true});
   if(mode==="audio"){
     localMicTrack=await AgoraRTC.createMicrophoneAudioTrack({encoderConfig:"speech_low_quality"});
     await localMicTrack.setMuted(false);
   }else{
     [localMicTrack,localCamTrack]=await AgoraRTC.createMicrophoneAndCameraTracks(
       {encoderConfig:"speech_low_quality"},
-      {encoderConfig:{width:1920,height:1080,frameRate:30,bitrateMin:800,bitrateMax:4500}}
+      {encoderConfig:{width:1920,height:1080,frameRate:30,bitrateMin:1500,bitrateMax:6000,optimizationMode:"detail"}}
     );
     await localMicTrack.setMuted(false);
     $("localVideoWrap").classList.remove("hidden");localCamTrack.play("localVideo");
@@ -440,6 +468,8 @@ async function launchCall(mode){
   activeCall={callId,mode,channel,ref,caller:true,groupId:activeFriend.isGroup?activeFriend.uid:null};watchActiveCall();
   $("callHeaderName").textContent=activeFriend.isGroup?`${activeFriend.name||"Group"} · Group call`:activeFriend.displayName||"Call";
   $("callHeaderAvatar").src=avatar(activeFriend);callUi(true);updateCallParticipants();setCallStatus("Connecting…");
+  enterCallFullscreen();
+  postCallRouteToNative(preferredAudioRouteForMode(mode));
   try{
     await setupAgora(mode,channel);
     setCallStatus("কলের উত্তর অপেক্ষা…");
@@ -478,6 +508,8 @@ async function acceptCall(){
   $("callInviteModal").classList.add("hidden");incomingCall=null;
   activeCall={callId:c.callId,mode:c.mode,channel:c.channel,ref:CALLS().doc(c.callId),caller:false,groupId:c.groupId||null};watchActiveCall();
   $("callHeaderName").textContent=c.groupId?(c.callerName+" · Group call"):c.callerName;$("callHeaderAvatar").src=c.callerPhoto||avatar(users.find(u=>u.uid===c.callerUid));callUi(true);updateCallParticipants();setCallStatus("Connecting…");
+  enterCallFullscreen();
+  postCallRouteToNative(preferredAudioRouteForMode(c.mode));
   try{await setupAgora(c.mode,c.channel);setCallStatus(c.mode==="video"?"ভিডিও কল চলছে":"অডিও কল চলছে");startCallTimer(Date.now());await activeCall.ref.set({status:"accepted",acceptedBy:me.uid,acceptedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true})}
   catch(e){console.error("acceptCall:",e);toast(e?.message?.includes("permission")||e?.name==="NotAllowedError"?"Microphone/Camera permission দিন":"কল গ্রহণ করা যায়নি");await endCall(false)}
 }
@@ -494,7 +526,7 @@ async function endCall(silent=false){
   const client=agoraClient;
   agoraClient=null;
   if(client){try{client.removeAllListeners();await client.leave()}catch(e){console.warn("Agora leave:",e)} }
-  pinnedCallParticipant=null;mutedRemoteParticipants.clear();closeCallParticipants();cleanupCallUI();incomingCall=null;
+  pinnedCallParticipant=null;mutedRemoteParticipants.clear();closeCallParticipants();cleanupCallUI();incomingCall=null;await exitCallFullscreen();
 
   if(c&&!silent){
     const endedAt=Date.now();
@@ -527,11 +559,14 @@ async function applyPlaybackDevice(track){
   return false
 }
 async function setPlaybackOutput(deviceId,mode="speaker"){
-  playbackMode=mode;selectedPlaybackDevice=deviceId||"default";
+  playbackMode=mode;
+  if(modeForActiveCall()==="video")mode="speaker";
+  if(modeForActiveCall()==="video")playbackMode="speaker";
+  postCallRouteToNative(mode);selectedPlaybackDevice=deviceId||"default";
   const tracks=[];remoteUsers.forEach(u=>{if(u.audioTrack)tracks.push(u.audioTrack)});
   for(const track of tracks){try{await applyPlaybackDevice(track)}catch(_){}}
   const btn=$("speakerCallBtn");
-  if(btn){btn.classList.add("active");btn.innerHTML=mode==="earpiece"?'<i class="fa-solid fa-mobile-screen-button"></i><span>Earpiece</span>':'<i class="fa-solid fa-volume-high"></i><span>Speaker</span>'}
+  if(btn){btn.classList.add("active");btn.innerHTML=mode==="earpiece" && modeForActiveCall()!=="video"?'<i class="fa-solid fa-mobile-screen-button"></i><span>Earpiece</span>':'<i class="fa-solid fa-volume-high"></i><span>Speaker</span>'}
   $("audioOutputMenu")?.classList.add("hidden");
   toast(mode==="earpiece"?"Earpiece selected":"Speaker selected");
 }
