@@ -29,7 +29,7 @@ window.addEventListener("error",function(e){
   if(String(e?.message||"").toLowerCase().includes("firebase")) console.error("Fast Messenger Firebase boot error:",e.error||e.message);
 });
 </script>
-<script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.24.0.js"></script>
+<script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.24.8.js"></script>
 <style id="messenger-theme-background">
 :root{--messenger-theme-bg:url("./assets/theme-background.webp");}
 html,body{min-height:100%;background:#eef8ff var(--messenger-theme-bg) center center/cover fixed no-repeat !important;background-attachment:fixed !important;}
@@ -434,5 +434,6 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
 }
 </script>
+
 </body>
 </html>
