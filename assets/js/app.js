@@ -786,7 +786,7 @@ function syncProfile(){
   $("editName").value=name;
   $("editPhoto").value=profile.photoURL||"";
   $("editBio").value=profile.bio||"";
-}async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();const base={uid:me.uid,displayName:me.displayName||me.email?.split("@")[0]||"User",email:me.email||"",photoURL:me.photoURL||null,lastSeen:firebase.firestore.FieldValue.serverTimestamp(),online:true};if(!snap.exists)await ref.set(base);else await ref.set({lastSeen:base.lastSeen,online:true},{merge:true});profile={...base,...(snap.exists?snap.data():{})};
+}async function ensureUser(){const ref=USERS().doc(me.uid),snap=await ref.get();const base={uid:me.uid,displayName:me.displayName||me.email?.split("@")[0]||"User",email:me.email||"",photoURL:me.photoURL||null,lastSeen:firebase.firestore.FieldValue.serverTimestamp(),online:true};if(!snap.exists)await ref.set(base);else await ref.set({uid:me.uid,lastSeen:base.lastSeen,online:true},{merge:true});profile={...base,...(snap.exists?snap.data():{})};
   const googleName=me.displayName||profile.displayName||base.displayName;
   const googlePhoto=me.photoURL||profile.photoURL||null;
   const googleEmail=me.email||profile.email||"";
@@ -873,7 +873,17 @@ function startListeners(){
   try{
     const friendsRef=db.ref("friends");
     const rebuildFriends=()=>{
-      const own=[...liveFriendMap.values()].filter(x=>String(x.ownerUid)===String(me.uid));
+      let own=[...liveFriendMap.values()].filter(x=>String(x.ownerUid)===String(me.uid));
+      // Repair older accepted requests that do not have a mirrored /friends record.
+      [...liveRequestMap.values()].filter(r=>String(r.status)==="accepted"&&(String(r.senderUid)===String(me.uid)||String(r.receiverUid)===String(me.uid))).forEach(r=>{
+        const uid=String(r.senderUid)===String(me.uid)?String(r.receiverUid):String(r.senderUid);
+        if(!uid||own.some(f=>String(f.friendUid)===uid))return;
+        const u=users.find(x=>String(x.uid)===uid)||{};
+        const p=String(r.pairId||pair(me.uid,uid));
+        const repaired={id:`${p}__${me.uid}`,pairId:p,ownerUid:me.uid,friendUid:uid,requestId:r.id,createdAt:r.respondedAt||r.createdAt||Date.now(),displayName:u.displayName||r.senderName||r.receiverName||"User",email:u.email||r.senderEmail||r.receiverEmail||"",photoURL:u.photoURL||r.senderPhotoURL||r.receiverPhotoURL||null};
+        liveFriendMap.set(repaired.id,repaired);
+      });
+      own=[...liveFriendMap.values()].filter(x=>String(x.ownerUid)===String(me.uid));
       if(own.length){
         friends=mergePersistentFriends(own)||own;
         friendsSyncReady=true;
@@ -913,7 +923,21 @@ function startListeners(){
       const tm=x=>rtdbToMillis(x?.createdAt)||rtdbToMillis(x?.respondedAt)||0;
       requests=pendingIncoming.sort((a,b)=>tm(b)-tm(a));
       sentRequests=pendingOutgoing.sort((a,b)=>tm(b)-tm(a));
+      // Accepted requests are also a recovery source for older accounts whose
+      // /friends mirror was not created correctly. Repair that mirror as soon
+      // as the request collection arrives, regardless of listener order.
+      const accepted=all.filter(r=>String(r.status)==="accepted"&&(String(r.senderUid)===String(me.uid)||String(r.receiverUid)===String(me.uid)));
+      accepted.forEach(r=>{
+        const uid=String(r.senderUid)===String(me.uid)?String(r.receiverUid):String(r.senderUid);
+        if(!uid||friends.some(f=>String(f.friendUid)===uid))return;
+        const u=users.find(x=>String(x.uid)===uid)||{};
+        const p=String(r.pairId||pair(me.uid,uid));
+        const repaired={id:`${p}__${me.uid}`,pairId:p,ownerUid:me.uid,friendUid:uid,requestId:r.id,createdAt:r.respondedAt||r.createdAt||Date.now(),displayName:u.displayName||r.senderName||r.receiverName||"User",email:u.email||r.senderEmail||r.receiverEmail||"",photoURL:u.photoURL||r.senderPhotoURL||r.receiverPhotoURL||null};
+        liveFriendMap.set(repaired.id,repaired);
+        friends=mergePersistentFriends([repaired,...friends])||[repaired,...friends];
+      });
       saveLocal("requests",requests);saveLocal("sentRequests",sentRequests);
+      saveLocal("friends",friends);
       updateRequestBadge();renderPeople();renderChats();updateStats();
     };
     const ra=s=>{if(s.val())liveRequestMap.set(String(s.key),{id:s.key,...s.val()});else liveRequestMap.delete(String(s.key));rebuildRequests()};
@@ -1513,6 +1537,8 @@ async function sendRequest(uid){
   if(isFriend(uid))return toast("আপনারা ইতিমধ্যে বন্ধু");
   const ref=REQUESTS().doc(pair(me.uid,uid));
   try{
+    const target=users.find(u=>String(u.uid)===String(uid))||await ensureUserProfileLoaded(uid)||{};
+    const requesterProfile={displayName:profile?.displayName||me.displayName||me.email?.split("@")[0]||"User",email:profile?.email||me.email||"",photoURL:profile?.photoURL||me.photoURL||null};
     const snap=await ref.get();
     if(snap.exists){
       const r=snap.data()||{};
@@ -1523,9 +1549,9 @@ async function sendRequest(uid){
       if(r.status==="accepted")return toast("আপনারা ইতিমধ্যে বন্ধু");
       if(r.status!=="rejected")return toast("এই request এখন পরিবর্তন করা যাচ্ছে না");
       if(r.senderUid!==me.uid)return toast("এই request পুনরায় পাঠানোর অনুমতি নেই");
-      await ref.update({status:"pending",respondedAt:firebase.firestore.FieldValue.delete(),createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+      await ref.update({senderUid:me.uid,receiverUid:uid,pairId:pair(me.uid,uid),senderName:requesterProfile.displayName,senderEmail:requesterProfile.email,senderPhotoURL:requesterProfile.photoURL,status:"pending",respondedAt:firebase.firestore.FieldValue.delete(),createdAt:firebase.firestore.FieldValue.serverTimestamp()});
     }else{
-      await ref.set({senderUid:me.uid,receiverUid:uid,pairId:pair(me.uid,uid),status:"pending",createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+      await ref.set({senderUid:me.uid,receiverUid:uid,pairId:pair(me.uid,uid),senderName:requesterProfile.displayName,senderEmail:requesterProfile.email,senderPhotoURL:requesterProfile.photoURL,receiverName:target?.displayName||target?.email?.split("@")[0]||"User",receiverEmail:target?.email||"",receiverPhotoURL:target?.photoURL||null,status:"pending",createdAt:firebase.firestore.FieldValue.serverTimestamp()});
     }
     toast("Friend request sent");
     renderPeople();
@@ -1546,8 +1572,12 @@ async function acceptRequest(id,uid){
 
     const now=Date.now();
     const p=pair(me.uid,uid);
-    const friendA={pairId:p,ownerUid:me.uid,friendUid:uid,requestId:id,createdAt:now};
-    const friendB={pairId:p,ownerUid:uid,friendUid:me.uid,requestId:id,createdAt:now};
+    const targetProfile=users.find(u=>String(u.uid)===String(uid))||await ensureUserProfileLoaded(uid)||{};
+    const myName=profile?.displayName||me.displayName||me.email?.split("@")[0]||"User";
+    const myEmail=profile?.email||me.email||"";
+    const myPhoto=profile?.photoURL||me.photoURL||null;
+    const friendA={pairId:p,ownerUid:me.uid,friendUid:uid,requestId:id,createdAt:now,displayName:targetProfile.displayName||req.senderName||req.receiverName||"User",email:targetProfile.email||req.senderEmail||req.receiverEmail||"",photoURL:targetProfile.photoURL||req.senderPhotoURL||req.receiverPhotoURL||null};
+    const friendB={pairId:p,ownerUid:uid,friendUid:me.uid,requestId:id,createdAt:now,displayName:myName,email:myEmail,photoURL:myPhoto};
     // A single RTDB multi-location update makes the friendship and request
     // status change together, so the two users cannot see a half-created friend.
     await db.ref().update({
