@@ -808,6 +808,7 @@ function stopListeners(){
 }
 function startListeners(){
   stopListeners();
+  if(!me)return;
   friendsSyncReady=false;groupsSyncReady=false;messagesSyncReady=false;
 
   // Always render the Home chat list immediately from the current in-memory/local
@@ -1531,7 +1532,55 @@ async function ensureUserProfileLoaded(uid){
 }
 function renderPeople(){
   const q=($("peopleSearch")?.value||"").trim().toLowerCase();
-  [...requests,...friends].map(x=>x?.senderUid||x?.friendUid).filter(Boolean).filter(uid=>!users.some(u=>String(u.uid)===String(uid))).slice(0,20).forEach(uid=>ensureUserProfileLoaded(uid));let rows=peopleTab==="friends"?friends.map(f=>users.find(u=>u.uid===f.friendUid)||{uid:f.friendUid,displayName:"User"}):peopleTab==="requests"?requests.map(r=>users.find(u=>u.uid===r.senderUid)||{uid:r.senderUid,displayName:"User"}):users;if(q)rows=rows.filter(u=>(u.displayName||"").toLowerCase().includes(q)||(u.email||"").toLowerCase().includes(q));const box=$("peopleList");box.innerHTML=rows.length?rows.map(u=>{const pending=requests.find(r=>r.senderUid===u.uid),sent=sentRequests.find(r=>r.receiverUid===u.uid),f=isFriend(u.uid);let actions=f?`<button class="small-btn primary" onclick="openChat('${u.uid}')">Message</button>`:(pending||sent)?`<button class="small-btn" disabled>Pending</button>`:`<button class="small-btn primary" onclick="sendRequest('${u.uid}')">Add friend</button>`;if(peopleTab==="requests"&&pending)actions=`<button class="small-btn primary" onclick="acceptRequest('${pending.id}','${u.uid}')">Accept</button><button class="small-btn danger" onclick="rejectRequest('${pending.id}')">Decline</button>`;return`<div class="person-item"><img class="avatar" src="${esc(avatar(u))}"><div class="item-copy" onclick="openUser('${u.uid}')"><strong>${esc(u.displayName||"User")}</strong><small>${esc(u.email||"")}</small></div><div class="person-actions">${actions}</div></div>`}).join(""):`<div class="empty">কোনো user পাওয়া যায়নি।</div>`}
+  const missing=[...requests,...friends].map(x=>x?.senderUid||x?.friendUid).filter(Boolean).filter(uid=>!users.some(u=>String(u.uid)===String(uid))).slice(0,20);
+  missing.forEach(uid=>ensureUserProfileLoaded(uid));
+
+  let rows=peopleTab==="friends"
+    ?friends.map(f=>users.find(u=>String(u.uid)===String(f.friendUid))||{uid:f.friendUid,displayName:f.displayName||"User",email:f.email||"",photoURL:f.photoURL||null})
+    :peopleTab==="requests"
+      ?requests.map(r=>users.find(u=>String(u.uid)===String(r.senderUid))||{uid:r.senderUid,displayName:r.senderName||"User",email:r.senderEmail||"",photoURL:r.senderPhotoURL||null})
+      :users;
+
+  if(q)rows=rows.filter(u=>String(u.displayName||"").toLowerCase().includes(q)||String(u.email||"").toLowerCase().includes(q));
+  const box=$("peopleList");
+  if(!box)return;
+  if(!rows.length){
+    box.innerHTML=peopleTab==="friends"
+      ?'<div class="empty friendly-empty"><i class="fa-solid fa-user-group"></i><b>এখনও কোনো বন্ধু নেই</b><span>Find people থেকে একজনকে Add friend করুন।</span></div>'
+      :peopleTab==="requests"
+        ?'<div class="empty friendly-empty"><i class="fa-regular fa-handshake"></i><b>কোনো pending request নেই</b><span>নতুন friend request এলে এখানে দেখা যাবে।</span></div>'
+        :'<div class="empty friendly-empty"><i class="fa-solid fa-magnifying-glass"></i><b>কোনো user পাওয়া যায়নি</b><span>নাম বা email দিয়ে আবার খুঁজুন।</span></div>';
+    updateRequestBadge(); return;
+  }
+
+  box.innerHTML=rows.map(u=>{
+    const uid=String(u.uid||"");
+    const incoming=peopleTab==="requests"&&requests.find(r=>String(r.senderUid)===uid);
+    const outgoing=sentRequests.find(r=>String(r.receiverUid)===uid);
+    const f=isFriend(uid);
+    let status="";
+    let actions="";
+    if(f){
+      status='<span class="person-status success"><i class="fa-solid fa-circle-check"></i> Friend</span>';
+      actions=`<button class="small-btn primary" onclick="openChat('${esc(uid)}')"><i class="fa-regular fa-message"></i> Message</button>`;
+    }else if(incoming){
+      status='<span class="person-status incoming"><i class="fa-solid fa-user-plus"></i> Incoming request</span>';
+      actions=`<button class="small-btn primary" onclick="acceptRequest('${esc(incoming.id)}','${esc(uid)}')">Accept</button><button class="small-btn danger" onclick="rejectRequest('${esc(incoming.id)}')">Decline</button>`;
+    }else if(outgoing){
+      status='<span class="person-status pending"><i class="fa-regular fa-clock"></i> Request sent</span>';
+      actions=`<button class="small-btn" disabled>Pending</button>`;
+    }else{
+      actions=`<button class="small-btn primary" onclick="sendRequest('${esc(uid)}')"><i class="fa-solid fa-user-plus"></i> Add friend</button>`;
+    }
+    const sub=peopleTab==="friends"&&f?'বন্ধু • Message করতে প্রস্তুত':status||String(u.email||"No email");
+    return `<div class="person-item friendly-person" data-uid="${esc(uid)}">
+      <img class="avatar" src="${esc(avatar(u))}" alt="">
+      <div class="item-copy" onclick="openUser('${esc(uid)}')"><strong>${esc(u.displayName||"User")}</strong><small>${esc(sub)}</small></div>
+      <div class="person-actions">${actions}</div>
+    </div>`;
+  }).join("");
+  updateRequestBadge();
+}
 async function sendRequest(uid){
   if(!me||!uid||uid===me.uid)return;
   if(isFriend(uid))return toast("আপনারা ইতিমধ্যে বন্ধু");
@@ -1603,7 +1652,7 @@ async function acceptRequest(id,uid){
   }
 }
 async function rejectRequest(id){try{const ref=REQUESTS().doc(id),snap=await ref.get();if(!snap.exists||snap.data()?.receiverUid!==me.uid)return toast("Request পাওয়া যায়নি");await ref.set({status:"rejected",respondedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});toast("Request declined")}catch(e){console.error(e);toast("কাজটি করা যায়নি")}}
-function updateRequestBadge(){const n=requests.length;["requestBadge","navPeopleBadge"].forEach(id=>{const e=$(id);e.textContent=n;e.classList.toggle("hidden",!n)})}
+function updateRequestBadge(){const n=requests.length;["requestBadge","navPeopleBadge"].forEach(id=>{const e=$(id);if(e){e.textContent=n;e.classList.toggle("hidden",!n)}});const fc=$("friendCountBadge");if(fc){fc.textContent=friends.length;fc.classList.toggle("hidden",friends.length===0)}}
 function updateStats(){if(!me)return;const msgs=[...messageMap.values()];$("statChats").textContent=new Set(msgs.filter(m=>!m.groupId).map(m=>m.senderUid===me.uid?m.receiverUid:m.senderUid)).size;$("statFriends").textContent=friends.length;$("statSent").textContent=msgs.filter(m=>m.senderUid===me.uid).length}
 function setChatHeader(u){
   const isGroup=!!u?.isGroup;
@@ -1730,7 +1779,7 @@ function messageHTML(m){
   const files=[...(Array.isArray(m.files)?m.files:[]),...legacyFile];
   const uniqueFiles=files.filter((f,i,a)=>f.downloadPage&&a.findIndex(x=>x.downloadPage===f.downloadPage)===i);
   const senderName=users.find(u=>String(u.uid)===String(m.senderUid))?.displayName||"Member";
-  const delBtn=`<button class="msg-delete-btn" type="button" title="Delete message" onclick="deleteMessage('${esc(m.id||'')}')"><i class="fa-solid fa-trash-can"></i></button>`;
+  const delBtn=mine?`<button class="msg-delete-btn" type="button" title="নিজের message মুছুন" aria-label="নিজের message মুছুন" onclick="deleteMessage('${esc(m.id||'')}')"><i class="fa-solid fa-trash-can"></i></button>`:"";
   return `<div class="msg-row ${mine?"mine":"theirs"}" data-message-id="${esc(m.id||"")}"><div class="bubble">${reactionBarHTML(m)}
     ${activeFriend?.isGroup&&!mine?`<div style="font-size:9px;font-weight:800;opacity:.7;margin-bottom:3px">${esc(senderName)}</div>`:""}
     ${replyQuoteHTML(m)}
@@ -1749,7 +1798,7 @@ async function deleteMessage(id){
   if(!me||!id)return;
   const m=activeMessageMap.get(id)||messageMap.get(id);
   if(!m)return toast("Message পাওয়া যায়নি");
-  if(m.senderUid!==me.uid&&m.receiverUid!==me.uid)return toast("এই message delete করার অনুমতি নেই");
+  if(String(m.senderUid)!==String(me.uid))return toast("শুধু আপনার পাঠানো message আপনি delete করতে পারবেন");
   if(!confirm("এই message টি delete করবেন?"))return;
   try{
     await MESSAGES().doc(id).delete();
@@ -2560,28 +2609,53 @@ function confirmDeleteAccount(){
   if(ok)deleteAccount();
 }
 async function deleteAccount(){
-  const btn=$("deleteAccountBtn");btn.disabled=true;
+  const btn=$( "deleteAccountBtn" );
+  if(!me||!auth.currentUser)return;
+  btn.disabled=true;
   try{
-    const uid=me.uid;
-    const targets=[];
+    const current=auth.currentUser;
+    const providerId=current.providerData?.[0]?.providerId||"";
+    if(providerId==="google.com"){
+      const provider=new firebase.auth.GoogleAuthProvider();
+      provider.setCustomParameters({prompt:"select_account"});
+      toast("নিরাপত্তার জন্য Google account আবার যাচাই করা হচ্ছে…");
+      await current.reauthenticateWithPopup(provider);
+    }
+
+    const uid=String(me.uid);
     const snap=await db.ref().once("value");
     const root=snap.val()||{};
+    const targets=[];
     ["users","friends","friendRequests","messages","groups","calls","notifications","typing","presence"].forEach(name=>{
       const node=root[name]||{};
       Object.entries(node).forEach(([id,v])=>{
-        const related = name==="users" ? id===uid : name==="friends" ? v?.ownerUid===uid||v?.friendUid===uid : name==="friendRequests" ? v?.senderUid===uid||v?.receiverUid===uid : name==="messages" ? v?.senderUid===uid||v?.receiverUid===uid||v?.groupMemberUids?.includes?.(uid) : name==="groups" ? v?.ownerUid===uid||v?.memberUids?.includes?.(uid) : name==="calls" ? v?.callerUid===uid||v?.receiverUid===uid||v?.recipientUids?.includes?.(uid) : id===uid;
+        const related=name==="users"?id===uid
+          :name==="friends"?(v?.ownerUid===uid||v?.friendUid===uid)
+          :name==="friendRequests"?(v?.senderUid===uid||v?.receiverUid===uid)
+          :name==="messages"?(v?.senderUid===uid||v?.receiverUid===uid||v?.groupMemberUids?.includes?.(uid))
+          :name==="groups"?(v?.ownerUid===uid||v?.memberUids?.includes?.(uid))
+          :name==="calls"?(v?.callerUid===uid||v?.receiverUid===uid||v?.recipientUids?.includes?.(uid)||v?.recipientMap?.[uid]===true)
+          :id===uid;
         if(related)targets.push(`${name}/${id}`);
       });
     });
-    const updates={};targets.forEach(path=>updates[path]=null);if(Object.keys(updates).length)await db.ref().update(updates);
-    await auth.currentUser.delete();
+    const updates={};
+    targets.forEach(path=>updates[path]=null);
+    if(Object.keys(updates).length)await db.ref().update(updates);
+    await current.delete();
+    localStorage.removeItem("fm_session_uid");
+    stopListeners();
+    me=null;profile=null;friends=[];requests=[];sentRequests=[];users=[];groups=[];messageMap.clear();activeMessageMap.clear();
+    toast("আপনার account এবং app data মুছে ফেলা হয়েছে");
   }catch(e){
-    console.error(e);
-    if(e?.code==="auth/requires-recent-login")toast("নিরাপত্তার জন্য আবার Google login করে Delete Account চালান");
+    console.error("deleteAccount",e);
+    if(e?.code==="auth/popup-closed-by-user"||e?.code==="auth/cancelled-popup-request")toast("Google verification বাতিল করা হয়েছে");
+    else if(e?.code==="auth/popup-blocked")toast("Google verification popup blocked হয়েছে; browser popup অনুমতি দিন");
+    else if(e?.code==="auth/requires-recent-login")toast("নিরাপত্তার জন্য আবার Google login করে Delete Account চালান");
+    else if(e?.code==="PERMISSION_DENIED"||e?.code==="permission-denied")toast("Database permission নেই। Firebase Rules প্রকাশ করুন");
     else toast("Account delete করা যায়নি");
   }finally{btn.disabled=false}
 }
-
 async function clearCache(){
   try{
     localStorage.removeItem("fm_theme");
