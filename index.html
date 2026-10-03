@@ -17,11 +17,12 @@ window.isWebView = /WebView|; wv\)|\bwv\b/i.test(navigator.userAgent || "") ||
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Bengali:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-<link rel="stylesheet" href="./assets/css/app.css?v=10">
+<link rel="stylesheet" href="./assets/css/app.css?v=performance25">
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
 <script>
 // Firebase boot diagnostics: keep startup errors visible in DevTools instead of
 // failing silently when a CDN/configuration problem prevents Firebase loading.
@@ -428,7 +429,7 @@ body.fm-viewer-open{overflow:hidden!important;overscroll-behavior:none;touch-act
 </div></div>
 
 <div id="lightbox" class="lightbox hidden"><button id="closeLightbox"><i class="fa-solid fa-xmark"></i></button><img id="lightboxImg" alt=""></div>
-<script src="./assets/js/app.js?v=friendfix24"></script>
+<script src="./assets/js/app.js?v=performance25"></script>
 <script>
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
