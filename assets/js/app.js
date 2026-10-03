@@ -62,6 +62,37 @@ window.sendPushNotification=sendPushNotification;
 const RTDB_DELETE=Symbol("RTDB_DELETE"),RTDB_SERVER_TIMESTAMP=Symbol("RTDB_SERVER_TIMESTAMP");
 const RTDB_ARRAY_UNION=Symbol("RTDB_ARRAY_UNION");
 function rtdbNow(){return Date.now()}
+
+// Fast object comparison for realtime snapshots. Avoid JSON.stringify() on
+// every message/user object because that blocks the main thread as data grows.
+function shallowDataChanged(a,b){
+  if(a===b)return false;
+  if(!a||!b)return true;
+  const ak=Object.keys(a),bk=Object.keys(b);
+  if(ak.length!==bk.length)return true;
+  for(const k of ak){if(a[k]!==b[k])return true;}
+  return false;
+}
+
+const pendingRenders=new Map();
+function scheduleRender(key,fn){
+  if(pendingRenders.has(key))return;
+  const id=requestAnimationFrame(()=>{
+    pendingRenders.delete(key);
+    try{fn();}catch(error){console.error(`render:${key}`,error);}
+  });
+  pendingRenders.set(key,id);
+}
+
+const DOM_CACHE=new Map();
+function $fast(id){
+  const cached=DOM_CACHE.get(id);
+  if(cached&&cached.isConnected)return cached;
+  const el=document.getElementById(id);
+  if(el)DOM_CACHE.set(id,el);
+  return el;
+}
+
 function rtdbToMillis(v){
   if(v&&typeof v.toMillis==="function")return v.toMillis();
   if(v&&v.__rtdbTimestamp!=null)return Number(v.__rtdbTimestamp);
@@ -142,7 +173,7 @@ class RTQuery{
   _match(obj){return this.filters.every(f=>{const a=obj?.[f.field],b=f.value;switch(f.op){case "==":return a===b;case ">":return rtdbToMillis(a)>rtdbToMillis(b);case ">=":return rtdbToMillis(a)>=rtdbToMillis(b);case "<":return rtdbToMillis(a)<rtdbToMillis(b);case "<=":return rtdbToMillis(a)<=rtdbToMillis(b);case "array-contains":return Array.isArray(a)&&a.some(x=>String(x)===String(b));default:return false}})}
   async _read(){const snap=await db.ref(this.path).once("value");const raw=snap.val()||{};return Object.entries(raw).filter(([,v])=>v&&this._match(v)).map(([id,v])=>new RTDocSnap(id,v))}
   async get(){return new RTQuerySnap(await this._read())}
-  onSnapshot(cb,err){let previous=new Map(),first=true;const r=db.ref(this.path);const fn=async snap=>{try{const raw=snap.val()||{};const current=new Map(Object.entries(raw).filter(([,v])=>v&&this._match(v)));const changes=[];for(const [id,v] of current){if(!previous.has(id))changes.push({type:"added",doc:new RTDocSnap(id,v)});else if(JSON.stringify(previous.get(id))!==JSON.stringify(v))changes.push({type:"modified",doc:new RTDocSnap(id,v)})}for(const [id,v] of previous)if(!current.has(id))changes.push({type:"removed",doc:new RTDocSnap(id,v)});const docs=[...current.entries()].map(([id,v])=>new RTDocSnap(id,v));previous=current;cb(new RTQuerySnap(docs,first?docs.map(d=>({type:"added",doc:d})):changes));first=false}catch(e){err?.(e)}};r.on("value",fn,e=>err?.(e));return()=>r.off("value",fn)}
+  onSnapshot(cb,err){let previous=new Map(),first=true;const r=db.ref(this.path);const fn=async snap=>{try{const raw=snap.val()||{};const current=new Map(Object.entries(raw).filter(([,v])=>v&&this._match(v)));const changes=[];for(const [id,v] of current){if(!previous.has(id))changes.push({type:"added",doc:new RTDocSnap(id,v)});else if(shallowDataChanged(previous.get(id),v))changes.push({type:"modified",doc:new RTDocSnap(id,v)})}for(const [id,v] of previous)if(!current.has(id))changes.push({type:"removed",doc:new RTDocSnap(id,v)});const docs=[...current.entries()].map(([id,v])=>new RTDocSnap(id,v));previous=current;cb(new RTQuerySnap(docs,first?docs.map(d=>({type:"added",doc:d})):changes));first=false}catch(e){err?.(e)}};r.on("value",fn,e=>err?.(e));return()=>r.off("value",fn)}
 }
 class RTBatch{
   constructor(){this.ops=[]}
@@ -413,10 +444,10 @@ async function setupAgora(mode,channel){
   }else{
     [localMicTrack,localCamTrack]=await AgoraRTC.createMicrophoneAndCameraTracks(
       {encoderConfig:"speech_low_quality"},
-      {encoderConfig:{width:1920,height:1080,frameRate:30,bitrateMin:1500,bitrateMax:6000,optimizationMode:"detail"}}
+      {encoderConfig:{width:1280,height:720,frameRate:24,bitrateMin:500,bitrateMax:2200,optimizationMode:"motion"}}
     );
     await localMicTrack.setMuted(false);
-    $("localVideoWrap").classList.remove("hidden");localCamTrack.play("localVideo");
+    $("localVideoWrap").classList.remove("hidden");localCamTrack.play("localVideo",{fit:"cover",mirrorMode:true});
   }
   await agoraClient.publish(mode==="audio"?[localMicTrack]:[localMicTrack,localCamTrack]);
 }
@@ -497,7 +528,83 @@ async function startCall(mode){
   return launchCall(mode);
 }
 
+const FCM_VAPID_KEY="BD5Lmw1pWqAH65t5l-0_tT2bkZfIleUio8-PibgKHB-Uw4hEtKYiNAyeJYNjC0TIHydj6TZrmX63Psap-O7_xzA";
+let fcmMessaging=null,fcmInitialized=false;
+
+function ensureIncomingRingtone(){
+  let audio=document.getElementById("incomingCallRingtone");
+  if(audio)return audio;
+  audio=document.createElement("audio");
+  audio.id="incomingCallRingtone";
+  audio.preload="auto";
+  audio.loop=true;
+  audio.playsInline=true;
+  audio.src="./assets/call-ringtone.mp3";
+  document.body.appendChild(audio);
+  return audio;
+}
+async function unlockIncomingRingtone(){
+  const audio=ensureIncomingRingtone();
+  try{audio.muted=true;await audio.play();audio.pause();audio.currentTime=0;audio.muted=false;return true}catch(_){return false}
+}
+async function startIncomingCallRingtone(){
+  if(localStorage.getItem("fm_notifications")==="off")return;
+  const audio=ensureIncomingRingtone();
+  try{audio.currentTime=0;audio.volume=1;await audio.play()}catch(_){
+    try{window.ReactNativeWebView?.postMessage(JSON.stringify({type:"CALL_RING_START"}))}catch(__){}
+  }
+}
+function stopIncomingCallRingtone(){
+  const audio=document.getElementById("incomingCallRingtone");
+  if(audio){try{audio.pause();audio.currentTime=0}catch(_){}}
+  try{window.ReactNativeWebView?.postMessage(JSON.stringify({type:"CALL_RING_STOP"}))}catch(_){}
+}
+
+async function initFCM(){
+  if(window.isWebView||!window.isSecureContext||!("Notification" in window)||!("serviceWorker" in navigator))return false;
+  if(!window.firebase?.messaging||!FCM_VAPID_KEY||FCM_VAPID_KEY==="YOUR_FIREBASE_WEB_PUSH_VAPID_KEY")return false;
+  try{
+    fcmMessaging=firebase.messaging();
+    const registration=await navigator.serviceWorker.register("./sw.js");
+    const permission=Notification.permission==="granted"?"granted":await Notification.requestPermission();
+    if(permission!=="granted")return false;
+    const token=await fcmMessaging.getToken({vapidKey:FCM_VAPID_KEY,serviceWorkerRegistration:registration});
+    if(!token||!auth.currentUser?.uid)return false;
+    await db.ref(`users/${auth.currentUser.uid}`).update({fcmToken:token,fcmTokenUpdatedAt:firebase.database.ServerValue.TIMESTAMP});
+    fcmMessaging.onMessage(payload=>{
+      const n=payload.notification||{},d=payload.data||{};
+      if(localStorage.getItem("fm_notifications")==="off")return;
+      playNotificationSound();
+      toast(`${n.title||d.title||"নতুন notification"}: ${n.body||d.body||""}`);
+    });
+    fcmInitialized=true;
+    return true;
+  }catch(e){console.warn("FCM initialization",e);return false}
+}
+
+function handleFCMRoute(route){
+  const clean=String(route||"").replace(/^\/+/,"").replace(/^#/ ,"");
+  if(clean.startsWith("chat/")){
+    const rest=clean.slice(5);
+    if(rest.startsWith("group/")){openGroupChat(decodeURIComponent(rest.slice(6)));return}
+    openChat(decodeURIComponent(rest));return;
+  }
+  if(clean==="home")showView("homeView");
+  else if(clean==="people")showView("peopleView");
+  else if(clean==="settings")showView("settingsView");
+}
+
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.addEventListener("message",event=>{
+    const d=event.data||{};
+    if(d.type==="FCM_NOTIFICATION_CLICK")handleFCMRoute(d.route||d.url||"");
+  });
+}
+
+document.addEventListener("pointerdown",()=>{unlockIncomingRingtone().catch(()=>{})},{once:true,passive:true});
+
 async function acceptCall(){
+  stopIncomingCallRingtone();
   const c=incomingCall;if(!c)return;
   if(activeCall){toast("আপনি ইতিমধ্যে একটি কলে আছেন");return;}
   $("callInviteModal").classList.add("hidden");incomingCall=null;
@@ -508,8 +615,9 @@ async function acceptCall(){
   try{await setupAgora(c.mode,c.channel);setCallStatus(c.mode==="video"?"ভিডিও কল চলছে":"অডিও কল চলছে");startCallTimer(Date.now());await activeCall.ref.set({status:"accepted",acceptedBy:me.uid,acceptedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true})}
   catch(e){console.error("acceptCall:",e);toast(e?.message?.includes("permission")||e?.name==="NotAllowedError"?"Microphone/Camera permission দিন":"কল গ্রহণ করা যায়নি");await endCall(false)}
 }
-async function rejectIncomingCall(){const c=incomingCall;if(!c)return;$("callInviteModal").classList.add("hidden");incomingCall=null;try{const endedAt=Date.now();await CALLS().doc(c.callId).set({status:"rejected",rejectedBy:me.uid,rejectedAt:firebase.firestore.FieldValue.serverTimestamp(),endedAt},{merge:true});await saveCallToChat({...c,status:"rejected",endedAt},"rejected")}catch(_){}}
+async function rejectIncomingCall(){stopIncomingCallRingtone();const c=incomingCall;if(!c)return;$("callInviteModal").classList.add("hidden");incomingCall=null;try{const endedAt=Date.now();await CALLS().doc(c.callId).set({status:"rejected",rejectedBy:me.uid,rejectedAt:firebase.firestore.FieldValue.serverTimestamp(),endedAt},{merge:true});await saveCallToChat({...c,status:"rejected",endedAt},"rejected")}catch(_){}}
 async function endCall(silent=false){
+  stopIncomingCallRingtone();
   // Publish the end-state FIRST. The other participant is listening to the
   // same call document, so this makes the hang-up realtime on both ends.
   const c=activeCall;
@@ -647,6 +755,7 @@ function watchCallInvites(){
     $("incomingCallName").textContent=c.callerName||"Incoming call";
     $("incomingCallType").textContent=c.mode==="video"?"ভিডিও কল":"অডিও কল";
     $("callInviteModal").classList.remove("hidden");
+    startIncomingCallRingtone();
     postIncomingCallToNative(incomingCall);
   };
   const onAdded=s=>handle(s),onChanged=s=>handle(s);
@@ -1836,13 +1945,14 @@ async function deleteMessage(id){
   if(!confirm("এই message টি delete করবেন?"))return;
   try{
     await MESSAGES().doc(id).delete();
-    activeMessageMap.delete(id);messageMap.delete(id);cacheMessages();renderMessages();
+    activeMessageMap.delete(id);messageMap.delete(id);cacheMessages();lastMessageRenderKey="";scheduleRender("active-messages",renderMessages);
     toast("Message deleted");
   }catch(e){
     console.error("deleteMessage",e);
     toast(e?.code==="permission-denied"?"Message delete করার permission নেই। Firestore Rules পরীক্ষা করুন":"Message delete করা যায়নি");
   }
 }
+let lastMessageRenderKey="";
 function renderMessages(){
   if(!activeFriend)return;
   const box=$("messages");
@@ -1853,6 +1963,9 @@ function renderMessages(){
       const dt=messageTimeValue(x)-messageTimeValue(y);
       return dt||String(x.id||"").localeCompare(String(y.id||""));
     });
+  const renderKey=arr.map(m=>[m.id,messageTimeValue(m),m.text||"",m.localPending?"pending":"",m.reactions?JSON.stringify(m.reactions):""].join("|")).join("§");
+  if(renderKey===lastMessageRenderKey)return;
+  lastMessageRenderKey=renderKey;
   const oldHeight=box.scrollHeight,oldTop=box.scrollTop,oldClient=box.clientHeight;
   const wasAtBottom=(oldHeight-oldClient-oldTop)<80 || oldHeight===0;
   const boxRect=box.getBoundingClientRect();
@@ -1902,7 +2015,8 @@ function subscribeChat(uid){
     :((String(m?.senderUid)===String(me?.uid)&&String(m?.receiverUid)===String(uid))||
       (String(m?.senderUid)===String(uid)&&String(m?.receiverUid)===String(me?.uid)));
   activeMessageMap=new Map([...messageMap.values()].filter(belongs).map(m=>[m.id,normalizeLocalMessage(m)]));
-  renderMessages();
+  lastMessageRenderKey="";
+  scheduleRender("active-messages",renderMessages);
 
   // Active-room realtime listeners: the global /messages listener is kept for
   // Home/unread state, while these focused listeners guarantee that a reply
@@ -1916,7 +2030,7 @@ function subscribeChat(uid){
     activeMessageMap.set(m.id,m);
     messageMap.set(m.id,m);
     cacheMessages();
-    renderMessages();
+    scheduleRender("active-messages",renderMessages);
     hydrateRenderedMessageImages([m]).catch(()=>{});
   };
   const attachRoomListener=(query)=>{
@@ -1948,7 +2062,7 @@ function subscribeChat(uid){
           docs=[...a.docs,...b.docs];
         }
         docs.forEach(d=>{const m=normalizeLocalMessage({id:d.id,...d.data()});messageMap.set(m.id,m);activeMessageMap.set(m.id,m)});
-        if(docs.length){cacheMessages();renderChats();updateChatUnreadBadge();renderMessages();}
+        if(docs.length){cacheMessages();scheduleRender("chats",renderChats);updateChatUnreadBadge();lastMessageRenderKey="";scheduleRender("active-messages",renderMessages);}
       }catch(e){console.warn("chat cold-open read",e)}
     })();
   }
@@ -2883,6 +2997,14 @@ const hadCachedSession=showCachedShell();
 // This removes the blank-profile / blank-chat flash on every hard refresh.
 if(hadCachedSession)preloadCachedSession();
 
+function debounce(fn,delay=100){
+  let timer=0;
+  return function(...args){clearTimeout(timer);timer=setTimeout(()=>fn.apply(this,args),delay)};
+}
+const debouncedPeopleSearch=debounce(()=>scheduleRender("people-search",renderPeople),100);
+const debouncedChatSearch=debounce(()=>scheduleRender("chat-search",renderChats),100);
+const debouncedGroupSearch=debounce(()=>scheduleRender("group-search",renderGroups),100);
+
 auth.onAuthStateChanged(async user=>{
   authResolved=true;
   if(user){
@@ -2900,6 +3022,7 @@ auth.onAuthStateChanged(async user=>{
     // This guarantees a freshly created Google account is present in /users before
     // Find People and realtime friend/request synchronization starts.
     await ensureUser().then(()=>saveLocal("profile",profile)).catch(e=>console.warn("profile sync delayed",e));
+    if(!window.isWebView && localStorage.getItem("fm_notifications")!=="off") initFCM().catch(e=>console.warn("FCM",e));
     startListeners();watchIncomingNotifications();watchCallInvites();scheduleWarmFriendChatCaches();
   }else{
     if(window.__resetGoogleLoginLoading)window.__resetGoogleLoginLoading();
@@ -2912,7 +3035,7 @@ auth.onAuthStateChanged(async user=>{
 
 document.querySelectorAll(".nav-item").forEach(b=>b.onclick=()=>showView(b.dataset.view));
 document.querySelectorAll("[data-people-tab]").forEach(b=>b.onclick=()=>{peopleTab=b.dataset.peopleTab;document.querySelectorAll("[data-people-tab]").forEach(x=>x.classList.toggle("active",x===b));renderPeople()});
-$("peopleSearch").oninput=renderPeople;$("chatSearch").oninput=renderChats;$("groupSearch").oninput=renderGroups;$("createGroupBtn").onclick=showGroupModal;$("saveGroupBtn").onclick=createGroup;
+$("peopleSearch").oninput=debouncedPeopleSearch;$("chatSearch").oninput=debouncedChatSearch;$("groupSearch").oninput=debouncedGroupSearch;$("createGroupBtn").onclick=showGroupModal;$("saveGroupBtn").onclick=createGroup;
 if($("refreshBtn"))$("refreshBtn").onclick=()=>{renderChats();renderPeople();renderGroups();toast("Refreshed")};
 $("backChat").onclick=closeChat;$("composer").onsubmit=sendMessage;
 const composerInput=$("messageInput"),sendButton=$("composer .send-btn");
